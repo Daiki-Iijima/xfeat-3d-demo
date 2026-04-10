@@ -1,0 +1,174 @@
+[
+  {
+    "shortDescription" : "LightGlue neural matcher (SIFT, 512 kpts)",
+    "metadataOutputVersion" : "3.0",
+    "outputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 512)",
+        "shortDescription" : "",
+        "shape" : "[1, 512]",
+        "name" : "matches0",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 512)",
+        "shortDescription" : "",
+        "shape" : "[1, 512]",
+        "name" : "scores",
+        "type" : "MultiArray"
+      }
+    ],
+    "version" : "1.0",
+    "modelParameters" : [
+
+    ],
+    "author" : "cvg\/lightglue",
+    "specificationVersion" : 7,
+    "storagePrecision" : "Float16",
+    "mlProgramOperationTypeHistogram" : {
+      "Transpose" : 108,
+      "Range1d" : 3,
+      "Squeeze" : 74,
+      "Ios16.exp" : 1,
+      "Ios16.softmax" : 38,
+      "Ios16.sin" : 2,
+      "Ios16.gatherAlongAxis" : 1,
+      "Split" : 36,
+      "Ios16.linear" : 170,
+      "Ios16.add" : 75,
+      "Concat" : 38,
+      "Ios16.reduceMax" : 1,
+      "Ios16.sigmoid" : 4,
+      "Tile" : 2,
+      "Select" : 2,
+      "Ios16.logicalAnd" : 1,
+      "Ios16.reduceArgmax" : 2,
+      "Ios16.greater" : 1,
+      "Ios16.log" : 6,
+      "ExpandDims" : 6,
+      "Ios16.sub" : 2,
+      "Ios16.gelu" : 36,
+      "Ios16.reshape" : 203,
+      "Ios16.matmul" : 64,
+      "Ios16.cast" : 1,
+      "Ios16.layerNorm" : 36,
+      "SliceByIndex" : 63,
+      "Stack" : 38,
+      "Ios16.scatter" : 3,
+      "Ios16.equal" : 1,
+      "Ios16.mul" : 150,
+      "Ios16.cos" : 2
+    },
+    "computePrecision" : "Mixed (Float16, Int32)",
+    "stateSchema" : [
+
+    ],
+    "isUpdatable" : "0",
+    "availability" : {
+      "macOS" : "13.0",
+      "tvOS" : "16.0",
+      "visionOS" : "1.0",
+      "watchOS" : "9.0",
+      "iOS" : "16.0",
+      "macCatalyst" : "16.0"
+    },
+    "modelType" : {
+      "name" : "MLModelType_mlProgram"
+    },
+    "inputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 512 × 2)",
+        "shortDescription" : "",
+        "shape" : "[1, 512, 2]",
+        "name" : "kpts0",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 512)",
+        "shortDescription" : "",
+        "shape" : "[1, 512]",
+        "name" : "scales0",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 512)",
+        "shortDescription" : "",
+        "shape" : "[1, 512]",
+        "name" : "oris0",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 512 × 128)",
+        "shortDescription" : "",
+        "shape" : "[1, 512, 128]",
+        "name" : "desc0",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 512 × 2)",
+        "shortDescription" : "",
+        "shape" : "[1, 512, 2]",
+        "name" : "kpts1",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 512)",
+        "shortDescription" : "",
+        "shape" : "[1, 512]",
+        "name" : "scales1",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 512)",
+        "shortDescription" : "",
+        "shape" : "[1, 512]",
+        "name" : "oris1",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 512 × 128)",
+        "shortDescription" : "",
+        "shape" : "[1, 512, 128]",
+        "name" : "desc1",
+        "type" : "MultiArray"
+      }
+    ],
+    "userDefinedMetadata" : {
+      "com.github.apple.coremltools.source_dialect" : "TorchScript",
+      "com.github.apple.coremltools.source" : "torch==2.11.0",
+      "com.github.apple.coremltools.version" : "8.2"
+    },
+    "generatedClassName" : "LightGlue",
+    "method" : "predict"
+  }
+]

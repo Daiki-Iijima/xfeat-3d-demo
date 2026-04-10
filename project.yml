@@ -19,8 +19,7 @@ targets:
         buildRule: coreml
       - path: Sources/ALIKED/ALIKED.mlpackage
         buildRule: coreml
-      - path: Sources/LightGlue/LightGlue.mlpackage
-        buildRule: coreml
+      - path: Sources/LightGlue/LightGlue.mlmodelc
       - path: Sources/SuperPoint/SuperPoint.mlpackage
         buildRule: coreml
     settings:
