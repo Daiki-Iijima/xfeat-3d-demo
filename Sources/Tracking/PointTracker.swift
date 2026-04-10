@@ -33,7 +33,7 @@ final class PointTracker: @unchecked Sendable {
     // Hierarchical-mode intervals
     var orbInterval:    Int = 10
     var xfeatInterval:  Int = 30
-    var alikedInterval: Int = 90
+    var alikedInterval: Int = 45
 
     // Per-tier merge/suppression radius (pixels in procSize space).
     // A new detection is considered "already tracked" if an existing point

@@ -95,26 +95,35 @@ final class VisualOdometryEngine: ObservableObject {
     /// regular feature points by PointTracker).
     private var bootstrapComplete: Bool = false
 
-    // MARK: - Recovery Keyframe (ALIKED / XFeat descriptor-based)
+    // MARK: - Recovery Keyframe
 
-    /// Keyframe used for lost recovery and periodic drift correction.
+    /// Keyframe saved periodically during tracking.
     ///
-    /// Stores L2-normalised descriptors (ALIKED 128-dim or XFeat 64-dim) of
-    /// tracked points that were matched to visual map entries at capture time,
-    /// together with the corresponding map entry indices.
+    /// Stores the raw procImage so that ALIKED features can be re-extracted fresh
+    /// at recovery time — ensuring both sides of the match use descriptors computed
+    /// from the same model run (no staleness from LK drift).
     private struct RecoveryKeyframe {
-        let mapDescriptors: [Float]  // count × descDim, L2-normalised
-        let mapIndices:     [Int]    // visualMap entry index for each row
-        let descDim:        Int
-        var count: Int { mapIndices.count }
+        let image: UIImage
+        /// Visual map entry index → 2D pixel position in the keyframe image.
+        let map2D: [(mapIdx: Int, pos2D: SIMD2<Float>)]
+        let descDim: Int
     }
 
     private var recoveryKeyframe: RecoveryKeyframe?
+    /// Cached ALIKED/XFeat features extracted from `recoveryKeyframe.image`.
+    /// Reset whenever the keyframe is replaced.
+    private var cachedKFFeatures: (aliked: ALIKEDFeatures?, xfeat: XFeatFeatures?) = (nil, nil)
+
+    /// Published image of the current recovery keyframe — for on-device debugging.
+    @Published private(set) var recoveryKeyframeImage: UIImage?
+
     private var lastKeyframeFrame: Int = -999
     /// Minimum frames between recovery keyframe updates.
     var keyframeInterval: Int = 30
     /// Minimum frames between periodic drift-correction runs.
     var correctionInterval: Int = 60
+    /// Maximum pixel distance to associate a matched keyframe ALIKED point to a map entry.
+    var kfProximityPx: Float = 20.0
 
     // MARK: - Bootstrap State
 
@@ -152,6 +161,8 @@ final class VisualOdometryEngine: ObservableObject {
         bootstrapPositions2D = []
         bootstrapComplete = false
         recoveryKeyframe = nil
+        cachedKFFeatures = (nil, nil)
+        recoveryKeyframeImage = nil
         lastKeyframeFrame = -999
         triRefPose = nil
         triRefPositions = [:]
@@ -352,7 +363,7 @@ final class VisualOdometryEngine: ObservableObject {
         let initialMatches = (0..<min(common.count, result.mapEntries.count)).map {
             (entryIdx: visualMap.count - result.mapEntries.count + $0, queryIdx: $0)
         }
-        updateRecoveryKeyframe(from: initialMatches, aliked: common, descDim: descDim)
+        updateRecoveryKeyframe(from: initialMatches, aliked: common, procImage: procImage, descDim: descDim)
 
         statusMessage = "初期化完了! マップ: \(mapPointCount)点"
     }
@@ -434,7 +445,7 @@ final class VisualOdometryEngine: ObservableObject {
 
         // Periodically save a recovery keyframe (ALIKED/XFeat descriptors)
         if frameIndex - lastKeyframeFrame >= keyframeInterval, !matches.isEmpty {
-            updateRecoveryKeyframe(from: matches, aliked: aliked, descDim: descDim)
+            updateRecoveryKeyframe(from: matches, aliked: aliked, procImage: procImage, descDim: descDim)
         }
 
         // Periodic drift correction: re-anchor pose via keyframe descriptor matching
@@ -518,75 +529,101 @@ final class VisualOdometryEngine: ObservableObject {
             return
         }
 
-        print("[VO] DescRecovery: kf.count=\(kf.count) descDim=\(kf.descDim) map=\(visualMap.count)")
+        print("[VO] Recovery: map2D=\(kf.map2D.count) descDim=\(kf.descDim) map=\(visualMap.count)")
 
-        // Fresh feature extraction using whichever tier built the keyframe
-        let queryKPs:   [SIMD2<Float>]
-        let queryDescs: [Float]
+        // ── Step 1: get keyframe ALIKED features (extract once, then cache) ──
+        let kfKPs:   [SIMD2<Float>]
+        let kfDescs: [Float]
+        let descDim = kf.descDim
 
-        if kf.descDim == 128 {
-            guard let f = ALIKEDMatcher.shared.extractFeatures(from: procImage), f.count > 0 else {
-                phase = .lost
-                statusMessage = "ALIKED抽出失敗 — ロスト"
-                print("[VO] DescRecovery: ALIKED extraction returned nil")
-                return
+        if descDim == 128 {
+            let feats: ALIKEDFeatures
+            if let cached = cachedKFFeatures.aliked {
+                feats = cached
+            } else {
+                guard let f = ALIKEDMatcher.shared.extractFeatures(from: kf.image), f.count > 0 else {
+                    phase = .lost; statusMessage = "KF ALIKED抽出失敗 — ロスト"; return
+                }
+                cachedKFFeatures.aliked = f
+                feats = f
             }
-            queryKPs   = f.keypoints
-            queryDescs = f.descriptors  // already L2-normalised
-            print("[VO] DescRecovery: ALIKED extracted \(f.count) pts")
+            kfKPs = feats.keypoints; kfDescs = feats.descriptors
+        } else {
+            let feats: XFeatFeatures
+            if let cached = cachedKFFeatures.xfeat {
+                feats = cached
+            } else {
+                guard let f = XFeatMatcher.shared.extractFeatures(from: kf.image), f.count > 0 else {
+                    phase = .lost; statusMessage = "KF XFeat抽出失敗 — ロスト"; return
+                }
+                cachedKFFeatures.xfeat = f
+                feats = f
+            }
+            kfKPs = feats.keypoints; kfDescs = feats.descriptors
+        }
+        print("[VO] Recovery: KF \(kfKPs.count) pts")
+
+        // ── Step 2: extract fresh features from the current frame ────────────
+        let curKPs:   [SIMD2<Float>]
+        let curDescs: [Float]
+        if descDim == 128 {
+            guard let f = ALIKEDMatcher.shared.extractFeatures(from: procImage), f.count > 0 else {
+                phase = .lost; statusMessage = "現フレームALIKED抽出失敗 — ロスト"; return
+            }
+            curKPs = f.keypoints; curDescs = f.descriptors
         } else {
             guard let f = XFeatMatcher.shared.extractFeatures(from: procImage), f.count > 0 else {
-                phase = .lost
-                statusMessage = "XFeat抽出失敗 — ロスト"
-                print("[VO] DescRecovery: XFeat extraction returned nil")
-                return
+                phase = .lost; statusMessage = "現フレームXFeat抽出失敗 — ロスト"; return
             }
-            queryKPs   = f.keypoints
-            queryDescs = f.descriptors
-            print("[VO] DescRecovery: XFeat extracted \(f.count) pts")
+            curKPs = f.keypoints; curDescs = f.descriptors
         }
+        print("[VO] Recovery: current \(curKPs.count) pts")
 
-        let M = queryKPs.count
-        let kfMatches = matchDescriptors(kf: kf, queryDescriptors: queryDescs, queryCount: M)
-        print("[VO] DescRecovery: matched \(kfMatches.count)/\(kf.count) kf entries (need \(minPnPInliers))")
+        // ── Step 3: mutual NN between KF features and current features ────────
+        let pairs = mutualNNRaw(
+            desc1: kfDescs, count1: kfKPs.count,
+            desc2: curDescs, count2: curKPs.count,
+            descDim: descDim, threshold: 0.60
+        )
+        print("[VO] Recovery: NN pairs=\(pairs.count)")
 
-        guard kfMatches.count >= minPnPInliers else {
-            phase = .lost
-            statusMessage = "キーフレームマッチ不足 (\(kfMatches.count)/\(minPnPInliers)) — ロスト"
-            return
-        }
-
+        // ── Step 4: associate KF ALIKED points to map entries by proximity ────
         var pts3D = [Float]()
         var pts2D = [Float]()
-        pts3D.reserveCapacity(kfMatches.count * 3)
-        pts2D.reserveCapacity(kfMatches.count * 2)
-        for m in kfMatches {
-            guard kf.mapIndices[m.kfIdx] < visualMap.entries.count else { continue }
-            let pos3D = visualMap.entries[kf.mapIndices[m.kfIdx]].position
-            let kp    = queryKPs[m.queryIdx]
+        for (kfIdx, curIdx) in pairs {
+            let kfKP = kfKPs[kfIdx]
+            guard let best = kf.map2D.min(by: {
+                simd_length($0.pos2D - kfKP) < simd_length($1.pos2D - kfKP)
+            }), simd_length(best.pos2D - kfKP) < kfProximityPx,
+            best.mapIdx < visualMap.entries.count else { continue }
+
+            let pos3D = visualMap.entries[best.mapIdx].position
+            let curKP = curKPs[curIdx]
             pts3D.append(pos3D.x); pts3D.append(pos3D.y); pts3D.append(pos3D.z)
-            pts2D.append(kp.x);    pts2D.append(kp.y)
+            pts2D.append(curKP.x); pts2D.append(curKP.y)
         }
         let count = pts3D.count / 3
+        print("[VO] Recovery: 3D-2D pairs=\(count) (need \(minPnPInliers))")
+
         guard count >= minPnPInliers else {
             phase = .lost
-            statusMessage = "3D対応点不足 (\(count)) — ロスト"
+            statusMessage = "3D対応点不足 (\(count)/\(minPnPInliers)) — ロスト"
             return
         }
 
+        // ── Step 5: solvePnP ─────────────────────────────────────────────────
         let (fx, fy, cx, cy) = intrinsics
         let pnp = OpenCVBridge.solvePnP(
             points3D: Data(bytes: pts3D, count: pts3D.count * 4),
             points2D: Data(bytes: pts2D, count: pts2D.count * 4),
             count: count, fx: fx, fy: fy, cx: cx, cy: cy
         )
-        print("[VO] DescRecovery: PnP success=\(pnp.success) inliers=\(pnp.inlierCount)/\(minPnPInliers)")
+        print("[VO] Recovery: PnP success=\(pnp.success) inliers=\(pnp.inlierCount)/\(minPnPInliers)")
 
         if pnp.success, pnp.inlierCount >= minPnPInliers {
             cameraPose = buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector).inverse
-            phase = .tracking   // ← transition back from .lost to .tracking
+            phase = .tracking
             statusMessage = "キーフレームマッチで復帰! インライア: \(pnp.inlierCount)点"
-            print("[VO] DescRecovery: SUCCESS → tracking")
         } else {
             phase = .lost
             statusMessage = "復帰PnP失敗 (inliers=\(pnp.inlierCount)/\(minPnPInliers)) — ロスト"
@@ -596,11 +633,7 @@ final class VisualOdometryEngine: ObservableObject {
     // MARK: - Periodic Drift Correction
 
     /// Re-anchor the current pose by matching already-tracked ALIKED/XFeat points
-    /// against the recovery keyframe's stored descriptors.
-    ///
-    /// Unlike `tryDescriptorRecovery`, this does NOT re-extract features — it reuses
-    /// `aliked` computed in the same tracking step, making it essentially free.
-    /// If the keyframe PnP succeeds, the pose is silently corrected.
+    /// against the recovery keyframe via fresh descriptor extraction (cached after first call).
     private func periodicCorrection(
         aliked: [TrackedPoint],
         intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float),
@@ -609,6 +642,31 @@ final class VisualOdometryEngine: ObservableObject {
         guard let kf = recoveryKeyframe, kf.descDim == descDim else { return }
         let M = aliked.count
         guard M >= minPnPInliers else { return }
+
+        // Use cached KF features (extract once, reuse)
+        let kfKPs: [SIMD2<Float>]
+        let kfDescs: [Float]
+        if descDim == 128 {
+            let feats: ALIKEDFeatures
+            if let cached = cachedKFFeatures.aliked {
+                feats = cached
+            } else {
+                guard let f = ALIKEDMatcher.shared.extractFeatures(from: kf.image), f.count > 0 else { return }
+                cachedKFFeatures.aliked = f
+                feats = f
+            }
+            kfKPs = feats.keypoints; kfDescs = feats.descriptors
+        } else {
+            let feats: XFeatFeatures
+            if let cached = cachedKFFeatures.xfeat {
+                feats = cached
+            } else {
+                guard let f = XFeatMatcher.shared.extractFeatures(from: kf.image), f.count > 0 else { return }
+                cachedKFFeatures.xfeat = f
+                feats = f
+            }
+            kfKPs = feats.keypoints; kfDescs = feats.descriptors
+        }
 
         // Build L2-normalised query matrix from tracked points
         var queryDescs = [Float](repeating: 0, count: M * descDim)
@@ -620,15 +678,23 @@ final class VisualOdometryEngine: ObservableObject {
             vDSP_vsmul(pt.descriptor, 1, [scale], &queryDescs[i * descDim], 1, vDSP_Length(descDim))
         }
 
-        let kfMatches = matchDescriptors(kf: kf, queryDescriptors: queryDescs, queryCount: M)
-        guard kfMatches.count >= minPnPInliers else { return }
+        let pairs = mutualNNRaw(
+            desc1: kfDescs, count1: kfKPs.count,
+            desc2: queryDescs, count2: M,
+            descDim: descDim, threshold: 0.65
+        )
+        guard pairs.count >= minPnPInliers else { return }
 
         var pts3D = [Float]()
         var pts2D = [Float]()
-        for m in kfMatches {
-            guard kf.mapIndices[m.kfIdx] < visualMap.entries.count else { continue }
-            let pos3D = visualMap.entries[kf.mapIndices[m.kfIdx]].position
-            let pt    = aliked[m.queryIdx]
+        for (kfIdx, queryIdx) in pairs {
+            let kfKP = kfKPs[kfIdx]
+            guard let best = kf.map2D.min(by: {
+                simd_length($0.pos2D - kfKP) < simd_length($1.pos2D - kfKP)
+            }), simd_length(best.pos2D - kfKP) < kfProximityPx,
+            best.mapIdx < visualMap.entries.count else { continue }
+            let pos3D = visualMap.entries[best.mapIdx].position
+            let pt = aliked[queryIdx]
             pts3D.append(pos3D.x); pts3D.append(pos3D.y); pts3D.append(pos3D.z)
             pts2D.append(pt.position.x); pts2D.append(pt.position.y)
         }
@@ -649,84 +715,65 @@ final class VisualOdometryEngine: ObservableObject {
 
     // MARK: - Keyframe Helpers
 
-    /// Build a `RecoveryKeyframe` from the current PnP matches and ALIKED tracks.
+    /// Save the current frame as recovery keyframe, recording which PnP-matched positions
+    /// correspond to which map entries (for proximity-based association at recovery time).
     private func updateRecoveryKeyframe(
         from matches: [(entryIdx: Int, queryIdx: Int)],
         aliked: [TrackedPoint],
+        procImage: UIImage,
         descDim: Int
     ) {
-        var kfDescs   = [Float]()
-        var kfIndices = [Int]()
-        kfDescs.reserveCapacity(matches.count * descDim)
-        kfIndices.reserveCapacity(matches.count)
-
-        for m in matches {
-            let desc = aliked[m.queryIdx].descriptor
-            guard desc.count == descDim else { continue }
-            // L2-normalise
-            var norm2: Float = 0
-            vDSP_svesq(desc, 1, &norm2, vDSP_Length(descDim))
-            let scale = 1.0 / max(sqrtf(norm2), 1e-8)
-            var nd = [Float](repeating: 0, count: descDim)
-            vDSP_vsmul(desc, 1, [scale], &nd, 1, vDSP_Length(descDim))
-            kfDescs.append(contentsOf: nd)
-            kfIndices.append(m.entryIdx)
+        let map2D = matches.compactMap { m -> (mapIdx: Int, pos2D: SIMD2<Float>)? in
+            guard m.queryIdx < aliked.count else { return nil }
+            return (mapIdx: m.entryIdx, pos2D: aliked[m.queryIdx].position)
         }
-        guard !kfIndices.isEmpty else { return }
-        recoveryKeyframe = RecoveryKeyframe(
-            mapDescriptors: kfDescs,
-            mapIndices:     kfIndices,
-            descDim:        descDim
-        )
+        guard !map2D.isEmpty else { return }
+        recoveryKeyframe = RecoveryKeyframe(image: procImage, map2D: map2D, descDim: descDim)
+        cachedKFFeatures = (nil, nil)   // invalidate cache so features are re-extracted from new image
+        recoveryKeyframeImage = procImage
         lastKeyframeFrame = frameIndex
     }
 
-    /// Mutual nearest-neighbour matching between keyframe descriptors and query descriptors.
-    /// Both descriptor matrices must be L2-normalised (cosine similarity = dot product).
-    private func matchDescriptors(
-        kf: RecoveryKeyframe,
-        queryDescriptors: [Float],
-        queryCount: Int,
-        threshold: Float = 0.72
-    ) -> [(kfIdx: Int, queryIdx: Int)] {
-        let D = kf.descDim
-        let N = kf.count
-        let M = queryCount
+    /// Mutual nearest-neighbour matching between two descriptor matrices using BLAS.
+    /// Returns pairs (idx in desc1, idx in desc2) that are mutual nearest neighbours
+    /// with cosine similarity ≥ threshold. Descriptors must be L2-normalised.
+    private func mutualNNRaw(
+        desc1: [Float], count1: Int,
+        desc2: [Float], count2: Int,
+        descDim: Int, threshold: Float
+    ) -> [(Int, Int)] {
+        let N = count1, M = count2, D = descDim
         guard N > 0, M > 0, D > 0 else { return [] }
 
-        // Similarity matrix S[N×M]: S[i,j] = cosine_sim(kf[i], query[j])
-        var sim = [Float](repeating: 0, count: N * M)
-        kf.mapDescriptors.withUnsafeBufferPointer { kp in
-            queryDescriptors.withUnsafeBufferPointer { qp in
+        var S = [Float](repeating: 0, count: N * M)
+        desc1.withUnsafeBufferPointer { p1 in
+            desc2.withUnsafeBufferPointer { p2 in
                 cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                             Int32(N), Int32(M), Int32(D),
-                            1.0, kp.baseAddress!, Int32(D),
-                                 qp.baseAddress!, Int32(D),
-                            0.0, &sim, Int32(M))
+                            1.0, p1.baseAddress!, Int32(D),
+                                 p2.baseAddress!, Int32(D),
+                            0.0, &S, Int32(M))
             }
         }
 
-        // Row argmax (kf → query)
-        var nn_N2M = [Int](repeating: -1, count: N)
+        var nn1 = [Int](repeating: -1, count: N)
         for i in 0..<N {
-            var best = threshold - 0.001; var bestJ = -1
-            for j in 0..<M { if sim[i*M+j] > best { best = sim[i*M+j]; bestJ = j } }
-            nn_N2M[i] = bestJ
+            var best: Float = threshold - 0.001; var bestJ = -1
+            for j in 0..<M { if S[i*M+j] > best { best = S[i*M+j]; bestJ = j } }
+            nn1[i] = bestJ
         }
-        // Column argmax (query → kf)
-        var nn_M2N = [Int](repeating: -1, count: M)
+        var nn2 = [Int](repeating: -1, count: M)
         for j in 0..<M {
             var best: Float = -1; var bestI = -1
-            for i in 0..<N { if sim[i*M+j] > best { best = sim[i*M+j]; bestI = i } }
-            nn_M2N[j] = bestI
+            for i in 0..<N { if S[i*M+j] > best { best = S[i*M+j]; bestI = i } }
+            nn2[j] = bestI
         }
 
-        // Mutual check
-        var result: [(kfIdx: Int, queryIdx: Int)] = []
+        var result: [(Int, Int)] = []
         for i in 0..<N {
-            let j = nn_N2M[i]
-            guard j >= 0, nn_M2N[j] == i else { continue }
-            result.append((kfIdx: i, queryIdx: j))
+            let j = nn1[i]
+            guard j >= 0, nn2[j] == i else { continue }
+            result.append((i, j))
         }
         return result
     }

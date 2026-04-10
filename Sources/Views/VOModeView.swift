@@ -109,6 +109,22 @@ struct VOModeView: View {
             }
             .ignoresSafeArea(edges: .bottom)
 
+            // ── Recovery keyframe thumbnail (top-right) ───────────────────
+            if let kfImage = voEngine.recoveryKeyframeImage {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("KF").font(.system(size: 9, weight: .bold)).foregroundStyle(.white.opacity(0.7))
+                    Image(uiImage: kfImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 120)
+                        .cornerRadius(6)
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.4), lineWidth: 1))
+                }
+                .padding(.top, 48)
+                .padding(.trailing, 12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            }
+
             // ── Point cloud viewer (modal) ───────────────────────────────
             if showPointCloud {
                 pointCloudOverlay
