@@ -346,6 +346,14 @@ final class VisualOdometryEngine: ObservableObject {
 
         bootstrapComplete = true
         phase = .tracking
+
+        // Save initial recovery keyframe immediately after bootstrap so that
+        // recovery is possible even if the user gets lost before keyframeInterval frames.
+        let initialMatches = (0..<min(common.count, result.mapEntries.count)).map {
+            (entryIdx: visualMap.count - result.mapEntries.count + $0, queryIdx: $0)
+        }
+        updateRecoveryKeyframe(from: initialMatches, aliked: common, descDim: descDim)
+
         statusMessage = "初期化完了! マップ: \(mapPointCount)点"
     }
 
@@ -384,9 +392,9 @@ final class VisualOdometryEngine: ObservableObject {
         lastMatchedIDs = Set(matches.map { aliked[$0.queryIdx].id })
 
         guard matches.count >= 6 else {
-            print("[VO] Track: match=\(matches.count) aliked=\(n) map=\(visualMap.count) — lost")
-            statusMessage = "マッチ不足 (\(matches.count)/6) — キーフレームマッチで復帰中"
-            tryDescriptorRecovery(procImage: procImage, intrinsics: intrinsics)
+            print("[VO] Track: match=\(matches.count)/6 aliked=\(n) map=\(visualMap.count) → lost")
+            phase = .lost
+            statusMessage = "マッチ不足 (\(matches.count)/6) — ロスト"
             return
         }
 
@@ -411,9 +419,9 @@ final class VisualOdometryEngine: ObservableObject {
         )
 
         guard pnp.success, pnp.inlierCount >= minPnPInliers else {
-            print("[VO] PnP failed: inliers=\(pnp.inlierCount)/\(minPnPInliers) success=\(pnp.success)")
-            statusMessage = "PnP失敗 (インライア: \(pnp.inlierCount)/\(minPnPInliers)) — キーフレームマッチで復帰中"
-            tryDescriptorRecovery(procImage: procImage, intrinsics: intrinsics)
+            print("[VO] PnP failed: inliers=\(pnp.inlierCount)/\(minPnPInliers) success=\(pnp.success) → lost")
+            phase = .lost
+            statusMessage = "PnP失敗 (インライア: \(pnp.inlierCount)/\(minPnPInliers)) — ロスト"
             return
         }
 
@@ -505,41 +513,46 @@ final class VisualOdometryEngine: ObservableObject {
     ) {
         guard let kf = recoveryKeyframe else {
             phase = .lost
-            statusMessage = "キーフレームなし — ロスト"
+            statusMessage = "キーフレームなし — ロスト (tracking後に自動保存)"
+            print("[VO] DescRecovery: no keyframe saved yet")
             return
         }
 
+        print("[VO] DescRecovery: kf.count=\(kf.count) descDim=\(kf.descDim) map=\(visualMap.count)")
+
         // Fresh feature extraction using whichever tier built the keyframe
-        let queryKPs: [SIMD2<Float>]
+        let queryKPs:   [SIMD2<Float>]
         let queryDescs: [Float]
 
         if kf.descDim == 128 {
-            guard let f = ALIKEDMatcher.shared.extractFeatures(from: procImage),
-                  f.count > 0 else {
+            guard let f = ALIKEDMatcher.shared.extractFeatures(from: procImage), f.count > 0 else {
                 phase = .lost
                 statusMessage = "ALIKED抽出失敗 — ロスト"
+                print("[VO] DescRecovery: ALIKED extraction returned nil")
                 return
             }
             queryKPs   = f.keypoints
             queryDescs = f.descriptors  // already L2-normalised
+            print("[VO] DescRecovery: ALIKED extracted \(f.count) pts")
         } else {
-            guard let f = XFeatMatcher.shared.extractFeatures(from: procImage),
-                  f.count > 0 else {
+            guard let f = XFeatMatcher.shared.extractFeatures(from: procImage), f.count > 0 else {
                 phase = .lost
                 statusMessage = "XFeat抽出失敗 — ロスト"
+                print("[VO] DescRecovery: XFeat extraction returned nil")
                 return
             }
             queryKPs   = f.keypoints
             queryDescs = f.descriptors
+            print("[VO] DescRecovery: XFeat extracted \(f.count) pts")
         }
 
         let M = queryKPs.count
         let kfMatches = matchDescriptors(kf: kf, queryDescriptors: queryDescs, queryCount: M)
+        print("[VO] DescRecovery: matched \(kfMatches.count)/\(kf.count) kf entries (need \(minPnPInliers))")
 
         guard kfMatches.count >= minPnPInliers else {
-            print("[VO] DescRecovery: only \(kfMatches.count) matches — lost")
             phase = .lost
-            statusMessage = "キーフレームマッチ不足 (\(kfMatches.count)) — ロスト"
+            statusMessage = "キーフレームマッチ不足 (\(kfMatches.count)/\(minPnPInliers)) — ロスト"
             return
         }
 
@@ -555,7 +568,11 @@ final class VisualOdometryEngine: ObservableObject {
             pts2D.append(kp.x);    pts2D.append(kp.y)
         }
         let count = pts3D.count / 3
-        guard count >= minPnPInliers else { phase = .lost; return }
+        guard count >= minPnPInliers else {
+            phase = .lost
+            statusMessage = "3D対応点不足 (\(count)) — ロスト"
+            return
+        }
 
         let (fx, fy, cx, cy) = intrinsics
         let pnp = OpenCVBridge.solvePnP(
@@ -563,14 +580,16 @@ final class VisualOdometryEngine: ObservableObject {
             points2D: Data(bytes: pts2D, count: pts2D.count * 4),
             count: count, fx: fx, fy: fy, cx: cx, cy: cy
         )
+        print("[VO] DescRecovery: PnP success=\(pnp.success) inliers=\(pnp.inlierCount)/\(minPnPInliers)")
 
         if pnp.success, pnp.inlierCount >= minPnPInliers {
             cameraPose = buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector).inverse
-            print("[VO] DescRecovery: inliers=\(pnp.inlierCount)")
+            phase = .tracking   // ← transition back from .lost to .tracking
             statusMessage = "キーフレームマッチで復帰! インライア: \(pnp.inlierCount)点"
+            print("[VO] DescRecovery: SUCCESS → tracking")
         } else {
             phase = .lost
-            statusMessage = "復帰PnP失敗 (inliers=\(pnp.inlierCount)) — ロスト"
+            statusMessage = "復帰PnP失敗 (inliers=\(pnp.inlierCount)/\(minPnPInliers)) — ロスト"
         }
     }
 
