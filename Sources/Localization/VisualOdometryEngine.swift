@@ -95,21 +95,26 @@ final class VisualOdometryEngine: ObservableObject {
     /// regular feature points by PointTracker).
     private var bootstrapComplete: Bool = false
 
-    // MARK: - Recovery Keyframe (LightGlue)
+    // MARK: - Recovery Keyframe (ALIKED / XFeat descriptor-based)
 
+    /// Keyframe used for lost recovery and periodic drift correction.
+    ///
+    /// Stores L2-normalised descriptors (ALIKED 128-dim or XFeat 64-dim) of
+    /// tracked points that were matched to visual map entries at capture time,
+    /// together with the corresponding map entry indices.
     private struct RecoveryKeyframe {
-        let image: UIImage
-        /// Parallel arrays: for each entry, the visual map index and its
-        /// 2D position at keyframe capture time.
-        let mapEntries2D: [(mapIdx: Int, pos2D: SIMD2<Float>)]
+        let mapDescriptors: [Float]  // count × descDim, L2-normalised
+        let mapIndices:     [Int]    // visualMap entry index for each row
+        let descDim:        Int
+        var count: Int { mapIndices.count }
     }
 
     private var recoveryKeyframe: RecoveryKeyframe?
     private var lastKeyframeFrame: Int = -999
     /// Minimum frames between recovery keyframe updates.
-    private let keyframeInterval: Int = 30
-    /// Maximum pixel distance to associate a LightGlue SIFT match to a map entry.
-    private let kfProximityThreshold: Float = 20.0
+    var keyframeInterval: Int = 30
+    /// Minimum frames between periodic drift-correction runs.
+    var correctionInterval: Int = 60
 
     // MARK: - Bootstrap State
 
@@ -193,10 +198,10 @@ final class VisualOdometryEngine: ObservableObject {
         case .searching:
             tryMarkerInit(procImage: procImage, aliked: topPts, intrinsics: intrinsics, descDim: descDim)
         case .lost:
-            // After bootstrap: recover via LightGlue (ArUco disabled)
+            // After bootstrap: recover via descriptor matching (ArUco disabled)
             // Before bootstrap: try ArUco again
             if bootstrapComplete {
-                tryLightGlueRecovery(procImage: procImage, intrinsics: intrinsics)
+                tryDescriptorRecovery(procImage: procImage, intrinsics: intrinsics)
             } else {
                 tryMarkerInit(procImage: procImage, aliked: topPts, intrinsics: intrinsics, descDim: descDim)
             }
@@ -380,8 +385,8 @@ final class VisualOdometryEngine: ObservableObject {
 
         guard matches.count >= 6 else {
             print("[VO] Track: match=\(matches.count) aliked=\(n) map=\(visualMap.count) — lost")
-            statusMessage = "マッチ不足 (\(matches.count)/6) — LightGlue復帰中"
-            tryLightGlueRecovery(procImage: procImage, intrinsics: intrinsics)
+            statusMessage = "マッチ不足 (\(matches.count)/6) — キーフレームマッチで復帰中"
+            tryDescriptorRecovery(procImage: procImage, intrinsics: intrinsics)
             return
         }
 
@@ -407,8 +412,8 @@ final class VisualOdometryEngine: ObservableObject {
 
         guard pnp.success, pnp.inlierCount >= minPnPInliers else {
             print("[VO] PnP failed: inliers=\(pnp.inlierCount)/\(minPnPInliers) success=\(pnp.success)")
-            statusMessage = "PnP失敗 (インライア: \(pnp.inlierCount)/\(minPnPInliers)) — LightGlue復帰中"
-            tryLightGlueRecovery(procImage: procImage, intrinsics: intrinsics)
+            statusMessage = "PnP失敗 (インライア: \(pnp.inlierCount)/\(minPnPInliers)) — キーフレームマッチで復帰中"
+            tryDescriptorRecovery(procImage: procImage, intrinsics: intrinsics)
             return
         }
 
@@ -419,11 +424,14 @@ final class VisualOdometryEngine: ObservableObject {
         pnpInlierCount = pnp.inlierCount
         statusMessage = "追跡中 — PnP: \(pnp.inlierCount)点 | マップ: \(mapPointCount)点 | マッチ: \(matchCount)点"
 
-        // Periodically save a recovery keyframe for LightGlue lost recovery
-        if frameIndex - lastKeyframeFrame >= keyframeInterval {
-            let kfEntries = matches.map { (mapIdx: $0.entryIdx, pos2D: aliked[$0.queryIdx].position) }
-            recoveryKeyframe = RecoveryKeyframe(image: procImage, mapEntries2D: kfEntries)
-            lastKeyframeFrame = frameIndex
+        // Periodically save a recovery keyframe (ALIKED/XFeat descriptors)
+        if frameIndex - lastKeyframeFrame >= keyframeInterval, !matches.isEmpty {
+            updateRecoveryKeyframe(from: matches, aliked: aliked, descDim: descDim)
+        }
+
+        // Periodic drift correction: re-anchor pose via keyframe descriptor matching
+        if correctionInterval > 0, frameIndex % correctionInterval == 0 {
+            periodicCorrection(aliked: aliked, intrinsics: intrinsics, descDim: descDim)
         }
 
         // Periodically triangulate new map points to grow the map
@@ -484,16 +492,14 @@ final class VisualOdometryEngine: ObservableObject {
         lastTriFrame = frameIndex
     }
 
-    // MARK: - LightGlue Recovery (replaces ArUco recovery after bootstrap)
+    // MARK: - Descriptor Recovery (ALIKED / XFeat, no SIFT)
 
-    /// Attempt to recover pose using LightGlue matching against the saved keyframe.
+    /// Attempt to recover pose by extracting fresh ALIKED or XFeat features
+    /// from the current frame and matching them against the saved recovery keyframe.
     ///
-    /// 1. Match SIFT features between the recovery keyframe and the current frame.
-    /// 2. For each matched keyframe SIFT point, find the nearest visual map entry
-    ///    (by 2D proximity in keyframe space).
-    /// 3. Build 3D-2D correspondences and run solvePnP.
-    /// 4. On success, resume tracking; on failure, transition to `.lost`.
-    private func tryLightGlueRecovery(
+    /// Used for lost recovery. Does NOT rely on LK-tracked positions (which may
+    /// have drifted or become invalid during the lost state).
+    private func tryDescriptorRecovery(
         procImage: UIImage,
         intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float)
     ) {
@@ -503,60 +509,207 @@ final class VisualOdometryEngine: ObservableObject {
             return
         }
 
-        let (fx, fy, cx, cy) = intrinsics
+        // Fresh feature extraction using whichever tier built the keyframe
+        let queryKPs: [SIMD2<Float>]
+        let queryDescs: [Float]
 
-        guard let pairs = LightGlueMatcher.shared.matchKeypoints(
-            reference: kf.image, query: procImage
-        ), pairs.count >= minPnPInliers else {
-            print("[VO] LightGlue: insufficient matches — lost")
+        if kf.descDim == 128 {
+            guard let f = ALIKEDMatcher.shared.extractFeatures(from: procImage),
+                  f.count > 0 else {
+                phase = .lost
+                statusMessage = "ALIKED抽出失敗 — ロスト"
+                return
+            }
+            queryKPs   = f.keypoints
+            queryDescs = f.descriptors  // already L2-normalised
+        } else {
+            guard let f = XFeatMatcher.shared.extractFeatures(from: procImage),
+                  f.count > 0 else {
+                phase = .lost
+                statusMessage = "XFeat抽出失敗 — ロスト"
+                return
+            }
+            queryKPs   = f.keypoints
+            queryDescs = f.descriptors
+        }
+
+        let M = queryKPs.count
+        let kfMatches = matchDescriptors(kf: kf, queryDescriptors: queryDescs, queryCount: M)
+
+        guard kfMatches.count >= minPnPInliers else {
+            print("[VO] DescRecovery: only \(kfMatches.count) matches — lost")
             phase = .lost
-            statusMessage = "LightGlueマッチ不足 — ロスト"
+            statusMessage = "キーフレームマッチ不足 (\(kfMatches.count)) — ロスト"
             return
         }
 
-        // Associate each keyframe SIFT match to the nearest visual map entry
         var pts3D = [Float]()
         var pts2D = [Float]()
-        pts3D.reserveCapacity(pairs.count * 3)
-        pts2D.reserveCapacity(pairs.count * 2)
-
-        for (kfKP, curKP) in pairs {
-            guard let best = kf.mapEntries2D.min(by: {
-                simd_length($0.pos2D - kfKP) < simd_length($1.pos2D - kfKP)
-            }), simd_length(best.pos2D - kfKP) < kfProximityThreshold else { continue }
-
-            guard best.mapIdx < visualMap.entries.count else { continue }
-            let pos3D = visualMap.entries[best.mapIdx].position
+        pts3D.reserveCapacity(kfMatches.count * 3)
+        pts2D.reserveCapacity(kfMatches.count * 2)
+        for m in kfMatches {
+            guard kf.mapIndices[m.kfIdx] < visualMap.entries.count else { continue }
+            let pos3D = visualMap.entries[kf.mapIndices[m.kfIdx]].position
+            let kp    = queryKPs[m.queryIdx]
             pts3D.append(pos3D.x); pts3D.append(pos3D.y); pts3D.append(pos3D.z)
-            pts2D.append(curKP.x); pts2D.append(curKP.y)
+            pts2D.append(kp.x);    pts2D.append(kp.y)
         }
-
         let count = pts3D.count / 3
-        guard count >= minPnPInliers else {
-            print("[VO] LightGlue: only \(count) 3D-2D pairs after proximity filter — lost")
-            phase = .lost
-            statusMessage = "LightGlue 3D対応点不足 (\(count)) — ロスト"
-            return
-        }
+        guard count >= minPnPInliers else { phase = .lost; return }
 
+        let (fx, fy, cx, cy) = intrinsics
         let pnp = OpenCVBridge.solvePnP(
             points3D: Data(bytes: pts3D, count: pts3D.count * 4),
             points2D: Data(bytes: pts2D, count: pts2D.count * 4),
-            count: count,
-            fx: fx, fy: fy, cx: cx, cy: cy
+            count: count, fx: fx, fy: fy, cx: cx, cy: cy
         )
 
         if pnp.success, pnp.inlierCount >= minPnPInliers {
-            let vm = buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector)
-            cameraPose = vm.inverse
-            // Stay in tracking — next frame will re-evaluate via normal PnP
-            print("[VO] LightGlue recovery: inliers=\(pnp.inlierCount)")
-            statusMessage = "LightGlueで復帰! インライア: \(pnp.inlierCount)点"
+            cameraPose = buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector).inverse
+            print("[VO] DescRecovery: inliers=\(pnp.inlierCount)")
+            statusMessage = "キーフレームマッチで復帰! インライア: \(pnp.inlierCount)点"
         } else {
-            print("[VO] LightGlue PnP failed: inliers=\(pnp.inlierCount) — lost")
             phase = .lost
-            statusMessage = "LightGlue PnP失敗 — ロスト"
+            statusMessage = "復帰PnP失敗 (inliers=\(pnp.inlierCount)) — ロスト"
         }
+    }
+
+    // MARK: - Periodic Drift Correction
+
+    /// Re-anchor the current pose by matching already-tracked ALIKED/XFeat points
+    /// against the recovery keyframe's stored descriptors.
+    ///
+    /// Unlike `tryDescriptorRecovery`, this does NOT re-extract features — it reuses
+    /// `aliked` computed in the same tracking step, making it essentially free.
+    /// If the keyframe PnP succeeds, the pose is silently corrected.
+    private func periodicCorrection(
+        aliked: [TrackedPoint],
+        intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float),
+        descDim: Int
+    ) {
+        guard let kf = recoveryKeyframe, kf.descDim == descDim else { return }
+        let M = aliked.count
+        guard M >= minPnPInliers else { return }
+
+        // Build L2-normalised query matrix from tracked points
+        var queryDescs = [Float](repeating: 0, count: M * descDim)
+        for (i, pt) in aliked.enumerated() {
+            guard pt.descriptor.count == descDim else { continue }
+            var norm2: Float = 0
+            vDSP_svesq(pt.descriptor, 1, &norm2, vDSP_Length(descDim))
+            let scale = 1.0 / max(sqrtf(norm2), 1e-8)
+            vDSP_vsmul(pt.descriptor, 1, [scale], &queryDescs[i * descDim], 1, vDSP_Length(descDim))
+        }
+
+        let kfMatches = matchDescriptors(kf: kf, queryDescriptors: queryDescs, queryCount: M)
+        guard kfMatches.count >= minPnPInliers else { return }
+
+        var pts3D = [Float]()
+        var pts2D = [Float]()
+        for m in kfMatches {
+            guard kf.mapIndices[m.kfIdx] < visualMap.entries.count else { continue }
+            let pos3D = visualMap.entries[kf.mapIndices[m.kfIdx]].position
+            let pt    = aliked[m.queryIdx]
+            pts3D.append(pos3D.x); pts3D.append(pos3D.y); pts3D.append(pos3D.z)
+            pts2D.append(pt.position.x); pts2D.append(pt.position.y)
+        }
+        let count = pts3D.count / 3
+        guard count >= minPnPInliers else { return }
+
+        let (fx, fy, cx, cy) = intrinsics
+        let pnp = OpenCVBridge.solvePnP(
+            points3D: Data(bytes: pts3D, count: pts3D.count * 4),
+            points2D: Data(bytes: pts2D, count: pts2D.count * 4),
+            count: count, fx: fx, fy: fy, cx: cx, cy: cy
+        )
+        if pnp.success, pnp.inlierCount >= minPnPInliers {
+            cameraPose = buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector).inverse
+            print("[VO] Correction: inliers=\(pnp.inlierCount)")
+        }
+    }
+
+    // MARK: - Keyframe Helpers
+
+    /// Build a `RecoveryKeyframe` from the current PnP matches and ALIKED tracks.
+    private func updateRecoveryKeyframe(
+        from matches: [(entryIdx: Int, queryIdx: Int)],
+        aliked: [TrackedPoint],
+        descDim: Int
+    ) {
+        var kfDescs   = [Float]()
+        var kfIndices = [Int]()
+        kfDescs.reserveCapacity(matches.count * descDim)
+        kfIndices.reserveCapacity(matches.count)
+
+        for m in matches {
+            let desc = aliked[m.queryIdx].descriptor
+            guard desc.count == descDim else { continue }
+            // L2-normalise
+            var norm2: Float = 0
+            vDSP_svesq(desc, 1, &norm2, vDSP_Length(descDim))
+            let scale = 1.0 / max(sqrtf(norm2), 1e-8)
+            var nd = [Float](repeating: 0, count: descDim)
+            vDSP_vsmul(desc, 1, [scale], &nd, 1, vDSP_Length(descDim))
+            kfDescs.append(contentsOf: nd)
+            kfIndices.append(m.entryIdx)
+        }
+        guard !kfIndices.isEmpty else { return }
+        recoveryKeyframe = RecoveryKeyframe(
+            mapDescriptors: kfDescs,
+            mapIndices:     kfIndices,
+            descDim:        descDim
+        )
+        lastKeyframeFrame = frameIndex
+    }
+
+    /// Mutual nearest-neighbour matching between keyframe descriptors and query descriptors.
+    /// Both descriptor matrices must be L2-normalised (cosine similarity = dot product).
+    private func matchDescriptors(
+        kf: RecoveryKeyframe,
+        queryDescriptors: [Float],
+        queryCount: Int,
+        threshold: Float = 0.72
+    ) -> [(kfIdx: Int, queryIdx: Int)] {
+        let D = kf.descDim
+        let N = kf.count
+        let M = queryCount
+        guard N > 0, M > 0, D > 0 else { return [] }
+
+        // Similarity matrix S[N×M]: S[i,j] = cosine_sim(kf[i], query[j])
+        var sim = [Float](repeating: 0, count: N * M)
+        kf.mapDescriptors.withUnsafeBufferPointer { kp in
+            queryDescriptors.withUnsafeBufferPointer { qp in
+                cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                            Int32(N), Int32(M), Int32(D),
+                            1.0, kp.baseAddress!, Int32(D),
+                                 qp.baseAddress!, Int32(D),
+                            0.0, &sim, Int32(M))
+            }
+        }
+
+        // Row argmax (kf → query)
+        var nn_N2M = [Int](repeating: -1, count: N)
+        for i in 0..<N {
+            var best = threshold - 0.001; var bestJ = -1
+            for j in 0..<M { if sim[i*M+j] > best { best = sim[i*M+j]; bestJ = j } }
+            nn_N2M[i] = bestJ
+        }
+        // Column argmax (query → kf)
+        var nn_M2N = [Int](repeating: -1, count: M)
+        for j in 0..<M {
+            var best: Float = -1; var bestI = -1
+            for i in 0..<N { if sim[i*M+j] > best { best = sim[i*M+j]; bestI = i } }
+            nn_M2N[j] = bestI
+        }
+
+        // Mutual check
+        var result: [(kfIdx: Int, queryIdx: Int)] = []
+        for i in 0..<N {
+            let j = nn_N2M[i]
+            guard j >= 0, nn_M2N[j] == i else { continue }
+            result.append((kfIdx: i, queryIdx: j))
+        }
+        return result
     }
 
     // MARK: - Triangulation

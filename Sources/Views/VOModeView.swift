@@ -44,6 +44,8 @@ struct VOModeView: View {
     @AppStorage("vo_minBootstrapCommon")   private var minBootstrapCommon:    Int    = 12
     @AppStorage("vo_minPnPInliers")        private var minPnPInliers:         Int    = 8
     @AppStorage("vo_triInterval")          private var triInterval:           Int    = 20
+    @AppStorage("vo_correctionInterval")   private var correctionInterval:    Int    = 60
+    @AppStorage("vo_keyframeInterval")     private var keyframeInterval:      Int    = 30
     @AppStorage("vo_minTriParallax")       private var minTriParallax:        Double = 8.0
     @AppStorage("vo_alikedBudget")         private var alikedBudget:          Int    = 150
 
@@ -366,6 +368,8 @@ struct VOModeView: View {
         voEngine.minBootstrapCommon    = minBootstrapCommon
         voEngine.minPnPInliers         = minPnPInliers
         voEngine.triInterval           = triInterval
+        voEngine.correctionInterval    = correctionInterval
+        voEngine.keyframeInterval      = keyframeInterval
         voEngine.minTriParallax        = Float(minTriParallax)
         PointTracker.shared.alikedBudget = alikedBudget
         PointTracker.shared.maxTier      = TrackTier(rawValue: maxTierRaw) ?? .aliked
@@ -413,6 +417,13 @@ struct VOModeView: View {
                     paramSliderI(label: "PnP最小インライア", value: $minPnPInliers,  range: 4...20,  format: "%d点")
                     paramSliderI(label: "三角測量間隔",      value: $triInterval,    range: 5...60,  format: "%dフレーム")
                     paramSliderD(label: "三角測量最小視差",  value: $minTriParallax, range: 2...30,  format: "%.0fpx")
+                }
+                Section("キーフレーム補正 (ALIKED/XFeat)") {
+                    paramSliderI(label: "キーフレーム更新間隔", value: $keyframeInterval,   range: 10...120, format: "%dフレーム")
+                    paramSliderI(label: "ドリフト補正間隔",     value: $correctionInterval, range: 0...180,  format: correctionInterval == 0 ? "無効" : "%dフレーム")
+                    Text("ドリフト補正: 一定間隔でキーフレームの記述子と照合し姿勢を補正します。0で無効。ロスト時は常に記述子ベースで復帰します。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Section("ALIKED点数") {
                     paramSliderI(label: "上限", value: $alikedBudget, range: 50...500, format: "%d点", step: 25)

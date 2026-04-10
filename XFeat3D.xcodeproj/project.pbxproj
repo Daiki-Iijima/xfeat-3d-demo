@@ -30,17 +30,14 @@
 		A167BF96218DCE77908CCA52 /* ALIKEDMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 892B98E9777457CE18AB980C /* ALIKEDMatcher.swift */; };
 		A31EA2E54D4DF119802DC9C0 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3844B0734AC22FDA09FD1DF /* ContentView.swift */; };
 		A6D5B6A2F71DBA3F6EB621F2 /* ALIKED.mlpackage in Sources */ = {isa = PBXBuildFile; fileRef = 052E04362E3DF2AB0755DAFF /* ALIKED.mlpackage */; };
-		B72E7E305482623E0C90B081 /* LightGlue.mlmodelc in Resources */ = {isa = PBXBuildFile; fileRef = 41BCB19F5F15ED472EA7101B /* LightGlue.mlmodelc */; };
 		C65526B22F5898518B3400B4 /* TrackedPoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = 837362EC1915C00F60B90B25 /* TrackedPoint.swift */; };
 		CF07ABB79BD72EF5EC15E111 /* opencv2.xcframework in Resources */ = {isa = PBXBuildFile; fileRef = AB6ECE5305FB6F0D8E259B2D /* opencv2.xcframework */; };
-		D0D924BBFA1B20AE5EAAD5EE /* LightGlue.mlpackage in Sources */ = {isa = PBXBuildFile; fileRef = 53ACC242493046631446C544 /* LightGlue.mlpackage */; };
 		D30E186E6D28D0FCD8D570E9 /* SceneKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2C19D74DAB3B2FA132C64A89 /* SceneKit.framework */; };
 		DA27076B4FD818B1225206D2 /* PointCloudView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5283922B6EF31E537CDEC009 /* PointCloudView.swift */; };
 		E3FE12A202C3C7AAAA0D2FEC /* TrackTier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78168C3B4F33777FEC3600C0 /* TrackTier.swift */; };
 		E479A9735E059BD5D1423363 /* ARSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1778B3DD74A4589678D2C2F2 /* ARSessionManager.swift */; };
 		EFB4CF7E0010D039D4907B4A /* SuperPoint.mlpackage in Sources */ = {isa = PBXBuildFile; fileRef = C8FA5694D3F27C5070C19AB0 /* SuperPoint.mlpackage */; };
 		F20AF81CD56D9D74D62C2242 /* PointCloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00D03CBDEE3A54C7CFCF294F /* PointCloud.swift */; };
-		F474666989FEB15BC347D394 /* LightGlueMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8992681C934544416BAAEB9C /* LightGlueMatcher.swift */; };
 		FF78221EEF9201F0F21600AB /* TrackingExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7420FF1D19D0BB8727F5999D /* TrackingExtractor.swift */; };
 /* End PBXBuildFile section */
 
@@ -71,11 +68,9 @@
 		352D9A2CA8A22ADE12E40745 /* VisualMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualMap.swift; sourceTree = "<group>"; };
 		39E94F99AEEA105BD441A227 /* OpenCVBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = OpenCVBridge.mm; sourceTree = "<group>"; };
 		3A49124201F4B5B7AB92AC62 /* OpenCVBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OpenCVBridge.h; sourceTree = "<group>"; };
-		41BCB19F5F15ED472EA7101B /* LightGlue.mlmodelc */ = {isa = PBXFileReference; path = LightGlue.mlmodelc; sourceTree = "<group>"; };
 		48C82C907DBEE9F80E5E4EDC /* ImageUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageUtils.swift; sourceTree = "<group>"; };
 		51E3826178DC6DF3086049CF /* XFeat3D-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "XFeat3D-Bridging-Header.h"; sourceTree = "<group>"; };
 		5283922B6EF31E537CDEC009 /* PointCloudView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PointCloudView.swift; sourceTree = "<group>"; };
-		53ACC242493046631446C544 /* LightGlue.mlpackage */ = {isa = PBXFileReference; path = LightGlue.mlpackage; sourceTree = "<group>"; };
 		5788543BD3D34D9A73AE42DC /* PLYExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PLYExporter.swift; sourceTree = "<group>"; };
 		5C1773426CAF550367A7F070 /* XFeat.mlpackage */ = {isa = PBXFileReference; path = XFeat.mlpackage; sourceTree = "<group>"; };
 		7420FF1D19D0BB8727F5999D /* TrackingExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackingExtractor.swift; sourceTree = "<group>"; };
@@ -84,7 +79,6 @@
 		837362EC1915C00F60B90B25 /* TrackedPoint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackedPoint.swift; sourceTree = "<group>"; };
 		86AC28DDF63E556340C7CF01 /* opencv2.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = opencv2.xcframework; path = Sources/OpenCV/opencv2.xcframework; sourceTree = "<group>"; };
 		892B98E9777457CE18AB980C /* ALIKEDMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ALIKEDMatcher.swift; sourceTree = "<group>"; };
-		8992681C934544416BAAEB9C /* LightGlueMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightGlueMatcher.swift; sourceTree = "<group>"; };
 		8D7DA0155C0E23BB8E9DF652 /* PnPLocalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PnPLocalizer.swift; sourceTree = "<group>"; };
 		A0FDFDF37B04FB57D28BE9FB /* CoreMotion.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMotion.framework; path = System/Library/Frameworks/CoreMotion.framework; sourceTree = SDKROOT; };
 		A53B46BA65800462FB09D1CD /* XFeatMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XFeatMatcher.swift; sourceTree = "<group>"; };
@@ -168,7 +162,6 @@
 				9941B6A10C42D6DDC80AEC77 /* ALIKED */,
 				8450C34463F3BB77818A718E /* App */,
 				08AA161041901BAC3F601F98 /* Camera */,
-				FB8118451DB721426D2AA3DE /* LightGlue */,
 				E154375541176C4ADF3DC04B /* Localization */,
 				FEC07353370A2272894E8CBA /* OpenCV */,
 				96DF5364E3F52CF2575C6878 /* Reconstruction */,
@@ -236,16 +229,6 @@
 				A7FE519BDA02A5E476EDFF0E /* VisualOdometryEngine.swift */,
 			);
 			path = Localization;
-			sourceTree = "<group>";
-		};
-		FB8118451DB721426D2AA3DE /* LightGlue */ = {
-			isa = PBXGroup;
-			children = (
-				41BCB19F5F15ED472EA7101B /* LightGlue.mlmodelc */,
-				53ACC242493046631446C544 /* LightGlue.mlpackage */,
-				8992681C934544416BAAEB9C /* LightGlueMatcher.swift */,
-			);
-			path = LightGlue;
 			sourceTree = "<group>";
 		};
 		FC5D5165ED200A3E30D0C140 /* SuperPoint */ = {
@@ -326,7 +309,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B72E7E305482623E0C90B081 /* LightGlue.mlmodelc in Resources */,
 				CF07ABB79BD72EF5EC15E111 /* opencv2.xcframework in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -345,8 +327,6 @@
 				9F1490E4E0D8C7A244CA2E70 /* CameraPreviewView.swift in Sources */,
 				A31EA2E54D4DF119802DC9C0 /* ContentView.swift in Sources */,
 				1D7B519717C943C73417388E /* ImageUtils.swift in Sources */,
-				D0D924BBFA1B20AE5EAAD5EE /* LightGlue.mlpackage in Sources */,
-				F474666989FEB15BC347D394 /* LightGlueMatcher.swift in Sources */,
 				5A495852390AFDB906AF89E7 /* MotionManager.swift in Sources */,
 				723458575D0B523055005D9A /* OpenCVBridge.mm in Sources */,
 				63E03896A469F9DB18ACB2F3 /* PLYExporter.swift in Sources */,
