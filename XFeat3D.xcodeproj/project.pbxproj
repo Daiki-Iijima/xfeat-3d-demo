@@ -17,7 +17,9 @@
 		3429E20894A0AEBE33579BFC /* PnPLocalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D7DA0155C0E23BB8E9DF652 /* PnPLocalizer.swift */; };
 		384F44A08DC0966034FADB67 /* ReconstructionEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09B07BFEDDE77E5201FB5D04 /* ReconstructionEngine.swift */; };
 		4755791F387B94D486F26943 /* opencv2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 86AC28DDF63E556340C7CF01 /* opencv2.xcframework */; };
+		4B720DCA23F25CA9AAB50CAA /* model.mlmodel in Sources */ = {isa = PBXBuildFile; fileRef = 7331BA1910DCD6753C864D72 /* model.mlmodel */; };
 		5089EDCC1B0349FB2B15824A /* opencv2.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 86AC28DDF63E556340C7CF01 /* opencv2.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		58C8D07FEED1B85041C51F08 /* Manifest.json in Resources */ = {isa = PBXBuildFile; fileRef = 72E6242F48D678778D94C91D /* Manifest.json */; };
 		5A495852390AFDB906AF89E7 /* MotionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 161FB08F66E460CBF5E88FFF /* MotionManager.swift */; };
 		63E03896A469F9DB18ACB2F3 /* PLYExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5788543BD3D34D9A73AE42DC /* PLYExporter.swift */; };
 		67323B0CE8A3807D1DF948D5 /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7AD29F822CE83340FB7236B3 /* Accelerate.framework */; };
@@ -28,6 +30,7 @@
 		99DF850E60E9A181E22BA676 /* PointTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = D83C7ABCBAA99C302FFAB9EA /* PointTracker.swift */; };
 		9F1490E4E0D8C7A244CA2E70 /* CameraPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 336DAE3883A6B7A853D9C490 /* CameraPreviewView.swift */; };
 		A167BF96218DCE77908CCA52 /* ALIKEDMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 892B98E9777457CE18AB980C /* ALIKEDMatcher.swift */; };
+		A26057FC557F3B0A334C349B /* weight.bin in Resources */ = {isa = PBXBuildFile; fileRef = 00B12C1680E565F3CE6F3FC7 /* weight.bin */; };
 		A31EA2E54D4DF119802DC9C0 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3844B0734AC22FDA09FD1DF /* ContentView.swift */; };
 		A6D5B6A2F71DBA3F6EB621F2 /* ALIKED.mlpackage in Sources */ = {isa = PBXBuildFile; fileRef = 052E04362E3DF2AB0755DAFF /* ALIKED.mlpackage */; };
 		C65526B22F5898518B3400B4 /* TrackedPoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = 837362EC1915C00F60B90B25 /* TrackedPoint.swift */; };
@@ -38,6 +41,7 @@
 		E479A9735E059BD5D1423363 /* ARSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1778B3DD74A4589678D2C2F2 /* ARSessionManager.swift */; };
 		EFB4CF7E0010D039D4907B4A /* SuperPoint.mlpackage in Sources */ = {isa = PBXBuildFile; fileRef = C8FA5694D3F27C5070C19AB0 /* SuperPoint.mlpackage */; };
 		F20AF81CD56D9D74D62C2242 /* PointCloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00D03CBDEE3A54C7CFCF294F /* PointCloud.swift */; };
+		F474666989FEB15BC347D394 /* LightGlueMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8992681C934544416BAAEB9C /* LightGlueMatcher.swift */; };
 		FF78221EEF9201F0F21600AB /* TrackingExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7420FF1D19D0BB8727F5999D /* TrackingExtractor.swift */; };
 /* End PBXBuildFile section */
 
@@ -56,8 +60,9 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		00B12C1680E565F3CE6F3FC7 /* weight.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = weight.bin; sourceTree = "<group>"; };
 		00D03CBDEE3A54C7CFCF294F /* PointCloud.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PointCloud.swift; sourceTree = "<group>"; };
-		052E04362E3DF2AB0755DAFF /* ALIKED.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; path = ALIKED.mlpackage; sourceTree = "<group>"; };
+		052E04362E3DF2AB0755DAFF /* ALIKED.mlpackage */ = {isa = PBXFileReference; path = ALIKED.mlpackage; sourceTree = "<group>"; };
 		09B07BFEDDE77E5201FB5D04 /* ReconstructionEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReconstructionEngine.swift; sourceTree = "<group>"; };
 		0A5F21B4C22422900CF795A8 /* CameraManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraManager.swift; sourceTree = "<group>"; };
 		161FB08F66E460CBF5E88FFF /* MotionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionManager.swift; sourceTree = "<group>"; };
@@ -72,13 +77,16 @@
 		51E3826178DC6DF3086049CF /* XFeat3D-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "XFeat3D-Bridging-Header.h"; sourceTree = "<group>"; };
 		5283922B6EF31E537CDEC009 /* PointCloudView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PointCloudView.swift; sourceTree = "<group>"; };
 		5788543BD3D34D9A73AE42DC /* PLYExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PLYExporter.swift; sourceTree = "<group>"; };
-		5C1773426CAF550367A7F070 /* XFeat.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; path = XFeat.mlpackage; sourceTree = "<group>"; };
+		5C1773426CAF550367A7F070 /* XFeat.mlpackage */ = {isa = PBXFileReference; path = XFeat.mlpackage; sourceTree = "<group>"; };
+		72E6242F48D678778D94C91D /* Manifest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Manifest.json; sourceTree = "<group>"; };
+		7331BA1910DCD6753C864D72 /* model.mlmodel */ = {isa = PBXFileReference; lastKnownFileType = file.mlmodel; path = model.mlmodel; sourceTree = "<group>"; };
 		7420FF1D19D0BB8727F5999D /* TrackingExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackingExtractor.swift; sourceTree = "<group>"; };
 		78168C3B4F33777FEC3600C0 /* TrackTier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackTier.swift; sourceTree = "<group>"; };
 		7AD29F822CE83340FB7236B3 /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
 		837362EC1915C00F60B90B25 /* TrackedPoint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackedPoint.swift; sourceTree = "<group>"; };
 		86AC28DDF63E556340C7CF01 /* opencv2.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = opencv2.xcframework; path = Sources/OpenCV/opencv2.xcframework; sourceTree = "<group>"; };
 		892B98E9777457CE18AB980C /* ALIKEDMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ALIKEDMatcher.swift; sourceTree = "<group>"; };
+		8992681C934544416BAAEB9C /* LightGlueMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightGlueMatcher.swift; sourceTree = "<group>"; };
 		8D7DA0155C0E23BB8E9DF652 /* PnPLocalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PnPLocalizer.swift; sourceTree = "<group>"; };
 		A0FDFDF37B04FB57D28BE9FB /* CoreMotion.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMotion.framework; path = System/Library/Frameworks/CoreMotion.framework; sourceTree = SDKROOT; };
 		A53B46BA65800462FB09D1CD /* XFeatMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XFeatMatcher.swift; sourceTree = "<group>"; };
@@ -86,10 +94,10 @@
 		A7FE519BDA02A5E476EDFF0E /* VisualOdometryEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualOdometryEngine.swift; sourceTree = "<group>"; };
 		AB6ECE5305FB6F0D8E259B2D /* opencv2.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = opencv2.xcframework; sourceTree = "<group>"; };
 		BE4E2BC6579D088DB3E9689E /* XFeat3DApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XFeat3DApp.swift; sourceTree = "<group>"; };
-		C8FA5694D3F27C5070C19AB0 /* SuperPoint.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; path = SuperPoint.mlpackage; sourceTree = "<group>"; };
+		C8FA5694D3F27C5070C19AB0 /* SuperPoint.mlpackage */ = {isa = PBXFileReference; path = SuperPoint.mlpackage; sourceTree = "<group>"; };
 		D3844B0734AC22FDA09FD1DF /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		D83C7ABCBAA99C302FFAB9EA /* PointTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PointTracker.swift; sourceTree = "<group>"; };
-		E4E5DF786D8A5784ADC0238B /* XFeat3D.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = XFeat3D.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E4E5DF786D8A5784ADC0238B /* XFeat3D.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = XFeat3D.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -146,6 +154,15 @@
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
+		2EEB6E87DA953FE0E31C0D5E /* com.apple.CoreML */ = {
+			isa = PBXGroup;
+			children = (
+				7331BA1910DCD6753C864D72 /* model.mlmodel */,
+				8309E1BC814B3B08925C1C39 /* weights */,
+			);
+			path = com.apple.CoreML;
+			sourceTree = "<group>";
+		};
 		612D92B667E9832937839B81 /* Views */ = {
 			isa = PBXGroup;
 			children = (
@@ -162,6 +179,7 @@
 				9941B6A10C42D6DDC80AEC77 /* ALIKED */,
 				8450C34463F3BB77818A718E /* App */,
 				08AA161041901BAC3F601F98 /* Camera */,
+				FB8118451DB721426D2AA3DE /* LightGlue */,
 				E154375541176C4ADF3DC04B /* Localization */,
 				FEC07353370A2272894E8CBA /* OpenCV */,
 				96DF5364E3F52CF2575C6878 /* Reconstruction */,
@@ -171,6 +189,14 @@
 				09D256EC712CF563D29D4DCB /* XFeat */,
 			);
 			path = Sources;
+			sourceTree = "<group>";
+		};
+		8309E1BC814B3B08925C1C39 /* weights */ = {
+			isa = PBXGroup;
+			children = (
+				00B12C1680E565F3CE6F3FC7 /* weight.bin */,
+			);
+			path = weights;
 			sourceTree = "<group>";
 		};
 		8450C34463F3BB77818A718E /* App */ = {
@@ -201,6 +227,14 @@
 			path = ALIKED;
 			sourceTree = "<group>";
 		};
+		B46B3D9EF0AED645EFD056B8 /* Data */ = {
+			isa = PBXGroup;
+			children = (
+				2EEB6E87DA953FE0E31C0D5E /* com.apple.CoreML */,
+			);
+			path = Data;
+			sourceTree = "<group>";
+		};
 		B54F5CA448029F75252C0EA9 /* Tracking */ = {
 			isa = PBXGroup;
 			children = (
@@ -229,6 +263,16 @@
 				A7FE519BDA02A5E476EDFF0E /* VisualOdometryEngine.swift */,
 			);
 			path = Localization;
+			sourceTree = "<group>";
+		};
+		FB8118451DB721426D2AA3DE /* LightGlue */ = {
+			isa = PBXGroup;
+			children = (
+				8992681C934544416BAAEB9C /* LightGlueMatcher.swift */,
+				72E6242F48D678778D94C91D /* Manifest.json */,
+				B46B3D9EF0AED645EFD056B8 /* Data */,
+			);
+			path = LightGlue;
 			sourceTree = "<group>";
 		};
 		FC5D5165ED200A3E30D0C140 /* SuperPoint */ = {
@@ -282,6 +326,8 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+				};
 			};
 			buildConfigurationList = 553D0E5EB3ACF840A133DB1D /* Build configuration list for PBXProject "XFeat3D" */;
 			developmentRegion = en;
@@ -307,7 +353,9 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				58C8D07FEED1B85041C51F08 /* Manifest.json in Resources */,
 				CF07ABB79BD72EF5EC15E111 /* opencv2.xcframework in Resources */,
+				A26057FC557F3B0A334C349B /* weight.bin in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -325,6 +373,7 @@
 				9F1490E4E0D8C7A244CA2E70 /* CameraPreviewView.swift in Sources */,
 				A31EA2E54D4DF119802DC9C0 /* ContentView.swift in Sources */,
 				1D7B519717C943C73417388E /* ImageUtils.swift in Sources */,
+				F474666989FEB15BC347D394 /* LightGlueMatcher.swift in Sources */,
 				5A495852390AFDB906AF89E7 /* MotionManager.swift in Sources */,
 				723458575D0B523055005D9A /* OpenCVBridge.mm in Sources */,
 				63E03896A469F9DB18ACB2F3 /* PLYExporter.swift in Sources */,
@@ -344,6 +393,7 @@
 				12DD2F35099EAA00817BB6AA /* XFeat.mlpackage in Sources */,
 				8EC227B4898AEF08EF3A59E9 /* XFeat3DApp.swift in Sources */,
 				2417A6EC799A535B5D848A88 /* XFeatMatcher.swift in Sources */,
+				4B720DCA23F25CA9AAB50CAA /* model.mlmodel in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -356,7 +406,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = C6BAJ38C74;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\"Sources/OpenCV\"",
@@ -444,7 +493,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = C6BAJ38C74;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\"Sources/OpenCV\"",

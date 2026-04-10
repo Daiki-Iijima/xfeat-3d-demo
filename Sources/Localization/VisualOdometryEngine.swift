@@ -66,6 +66,8 @@ final class VisualOdometryEngine: ObservableObject {
 
     // MARK: - Tunable Parameters
 
+    /// ArUco marker ID to use for bootstrapping. -1 = accept any marker.
+    var targetMarkerID: Int = -1
     /// Physical size of the ArUco marker in metres.
     var markerSizeMeters: Float = 0.15
     /// Minimum average pixel displacement needed to trigger bootstrap triangulation.
@@ -85,6 +87,29 @@ final class VisualOdometryEngine: ObservableObject {
 
     let procW: Float = 960
     let procH: Float = 720
+
+    // MARK: - Bootstrap Complete Flag
+
+    /// True once the first successful triangulation has completed.
+    /// When true, ArUco detection is completely disabled (marker treated as
+    /// regular feature points by PointTracker).
+    private var bootstrapComplete: Bool = false
+
+    // MARK: - Recovery Keyframe (LightGlue)
+
+    private struct RecoveryKeyframe {
+        let image: UIImage
+        /// Parallel arrays: for each entry, the visual map index and its
+        /// 2D position at keyframe capture time.
+        let mapEntries2D: [(mapIdx: Int, pos2D: SIMD2<Float>)]
+    }
+
+    private var recoveryKeyframe: RecoveryKeyframe?
+    private var lastKeyframeFrame: Int = -999
+    /// Minimum frames between recovery keyframe updates.
+    private let keyframeInterval: Int = 30
+    /// Maximum pixel distance to associate a LightGlue SIFT match to a map entry.
+    private let kfProximityThreshold: Float = 20.0
 
     // MARK: - Bootstrap State
 
@@ -120,6 +145,9 @@ final class VisualOdometryEngine: ObservableObject {
         bootstrapPose = nil
         bootstrapDescriptors = []
         bootstrapPositions2D = []
+        bootstrapComplete = false
+        recoveryKeyframe = nil
+        lastKeyframeFrame = -999
         triRefPose = nil
         triRefPositions = [:]
         frameIndex = 0
@@ -162,8 +190,16 @@ final class VisualOdometryEngine: ObservableObject {
         activeDescDim = descDim
 
         switch phase {
-        case .searching, .lost:
+        case .searching:
             tryMarkerInit(procImage: procImage, aliked: topPts, intrinsics: intrinsics, descDim: descDim)
+        case .lost:
+            // After bootstrap: recover via LightGlue (ArUco disabled)
+            // Before bootstrap: try ArUco again
+            if bootstrapComplete {
+                tryLightGlueRecovery(procImage: procImage, intrinsics: intrinsics)
+            } else {
+                tryMarkerInit(procImage: procImage, aliked: topPts, intrinsics: intrinsics, descDim: descDim)
+            }
         case .bootstrapping:
             tryBootstrap(aliked: topPts, intrinsics: intrinsics, procImage: procImage, descDim: descDim)
         case .tracking:
@@ -303,6 +339,7 @@ final class VisualOdometryEngine: ObservableObject {
         triRefPositions = Dictionary(uniqueKeysWithValues: aliked.map { ($0.id, $0.position) })
         lastTriFrame = frameIndex
 
+        bootstrapComplete = true
         phase = .tracking
         statusMessage = "初期化完了! マップ: \(mapPointCount)点"
     }
@@ -343,8 +380,8 @@ final class VisualOdometryEngine: ObservableObject {
 
         guard matches.count >= 6 else {
             print("[VO] Track: match=\(matches.count) aliked=\(n) map=\(visualMap.count) — lost")
-            statusMessage = "マッチ不足 (\(matches.count)/6) — ロスト回復中"
-            tryArUcoRecovery(procImage: procImage, intrinsics: intrinsics)
+            statusMessage = "マッチ不足 (\(matches.count)/6) — LightGlue復帰中"
+            tryLightGlueRecovery(procImage: procImage, intrinsics: intrinsics)
             return
         }
 
@@ -370,8 +407,8 @@ final class VisualOdometryEngine: ObservableObject {
 
         guard pnp.success, pnp.inlierCount >= minPnPInliers else {
             print("[VO] PnP failed: inliers=\(pnp.inlierCount)/\(minPnPInliers) success=\(pnp.success)")
-            statusMessage = "PnP失敗 (インライア: \(pnp.inlierCount)/\(minPnPInliers)) — 回復中"
-            tryArUcoRecovery(procImage: procImage, intrinsics: intrinsics)
+            statusMessage = "PnP失敗 (インライア: \(pnp.inlierCount)/\(minPnPInliers)) — LightGlue復帰中"
+            tryLightGlueRecovery(procImage: procImage, intrinsics: intrinsics)
             return
         }
 
@@ -381,6 +418,13 @@ final class VisualOdometryEngine: ObservableObject {
         cameraPose = newPose
         pnpInlierCount = pnp.inlierCount
         statusMessage = "追跡中 — PnP: \(pnp.inlierCount)点 | マップ: \(mapPointCount)点 | マッチ: \(matchCount)点"
+
+        // Periodically save a recovery keyframe for LightGlue lost recovery
+        if frameIndex - lastKeyframeFrame >= keyframeInterval {
+            let kfEntries = matches.map { (mapIdx: $0.entryIdx, pos2D: aliked[$0.queryIdx].position) }
+            recoveryKeyframe = RecoveryKeyframe(image: procImage, mapEntries2D: kfEntries)
+            lastKeyframeFrame = frameIndex
+        }
 
         // Periodically triangulate new map points to grow the map
         if frameIndex - lastTriFrame >= triInterval {
@@ -440,19 +484,78 @@ final class VisualOdometryEngine: ObservableObject {
         lastTriFrame = frameIndex
     }
 
-    // MARK: - ArUco Recovery (Lost / Tracking)
+    // MARK: - LightGlue Recovery (replaces ArUco recovery after bootstrap)
 
-    private func tryArUcoRecovery(
+    /// Attempt to recover pose using LightGlue matching against the saved keyframe.
+    ///
+    /// 1. Match SIFT features between the recovery keyframe and the current frame.
+    /// 2. For each matched keyframe SIFT point, find the nearest visual map entry
+    ///    (by 2D proximity in keyframe space).
+    /// 3. Build 3D-2D correspondences and run solvePnP.
+    /// 4. On success, resume tracking; on failure, transition to `.lost`.
+    private func tryLightGlueRecovery(
         procImage: UIImage,
         intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float)
     ) {
-        if let pose = detectArUco(procImage: procImage, intrinsics: intrinsics) {
-            lastMarkerFrame = frameIndex
-            isMarkerInView  = true
-            cameraPose = pose
-            // Survived without resetting map — resume tracking next frame
-        } else {
+        guard let kf = recoveryKeyframe else {
             phase = .lost
+            statusMessage = "キーフレームなし — ロスト"
+            return
+        }
+
+        let (fx, fy, cx, cy) = intrinsics
+
+        guard let pairs = LightGlueMatcher.shared.matchKeypoints(
+            reference: kf.image, query: procImage
+        ), pairs.count >= minPnPInliers else {
+            print("[VO] LightGlue: insufficient matches — lost")
+            phase = .lost
+            statusMessage = "LightGlueマッチ不足 — ロスト"
+            return
+        }
+
+        // Associate each keyframe SIFT match to the nearest visual map entry
+        var pts3D = [Float]()
+        var pts2D = [Float]()
+        pts3D.reserveCapacity(pairs.count * 3)
+        pts2D.reserveCapacity(pairs.count * 2)
+
+        for (kfKP, curKP) in pairs {
+            guard let best = kf.mapEntries2D.min(by: {
+                simd_length($0.pos2D - kfKP) < simd_length($1.pos2D - kfKP)
+            }), simd_length(best.pos2D - kfKP) < kfProximityThreshold else { continue }
+
+            guard best.mapIdx < visualMap.entries.count else { continue }
+            let pos3D = visualMap.entries[best.mapIdx].position
+            pts3D.append(pos3D.x); pts3D.append(pos3D.y); pts3D.append(pos3D.z)
+            pts2D.append(curKP.x); pts2D.append(curKP.y)
+        }
+
+        let count = pts3D.count / 3
+        guard count >= minPnPInliers else {
+            print("[VO] LightGlue: only \(count) 3D-2D pairs after proximity filter — lost")
+            phase = .lost
+            statusMessage = "LightGlue 3D対応点不足 (\(count)) — ロスト"
+            return
+        }
+
+        let pnp = OpenCVBridge.solvePnP(
+            points3D: Data(bytes: pts3D, count: pts3D.count * 4),
+            points2D: Data(bytes: pts2D, count: pts2D.count * 4),
+            count: count,
+            fx: fx, fy: fy, cx: cx, cy: cy
+        )
+
+        if pnp.success, pnp.inlierCount >= minPnPInliers {
+            let vm = buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector)
+            cameraPose = vm.inverse
+            // Stay in tracking — next frame will re-evaluate via normal PnP
+            print("[VO] LightGlue recovery: inliers=\(pnp.inlierCount)")
+            statusMessage = "LightGlueで復帰! インライア: \(pnp.inlierCount)点"
+        } else {
+            print("[VO] LightGlue PnP failed: inliers=\(pnp.inlierCount) — lost")
+            phase = .lost
+            statusMessage = "LightGlue PnP失敗 — ロスト"
         }
     }
 
@@ -598,10 +701,16 @@ final class VisualOdometryEngine: ObservableObject {
     // MARK: - Helpers
 
     /// Detect ArUco 5×5 marker and return camera-to-world pose on success.
+    ///
+    /// Returns `nil` immediately once bootstrap is complete — the marker is then
+    /// treated as a plain feature point tracked by PointTracker.
+    /// If `targetMarkerID >= 0`, only accepts the marker with that specific ID.
     private func detectArUco(
         procImage: UIImage,
         intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float)
     ) -> simd_float4x4? {
+        guard !bootstrapComplete else { return nil }
+
         let (fx, fy, cx, cy) = intrinsics
         let aruco = OpenCVBridge.detectArUco5x5(
             procImage, markerSize: markerSizeMeters,
@@ -609,6 +718,10 @@ final class VisualOdometryEngine: ObservableObject {
             fx: fx, fy: fy, cx: cx, cy: cy
         )
         guard aruco.detected else { return nil }
+
+        // Filter by target marker ID if specified
+        if targetMarkerID >= 0, aruco.markerId != targetMarkerID { return nil }
+
         let vm = buildViewMatrix(rData: aruco.rotationMatrix, tData: aruco.translationVector)
         return vm.inverse
     }

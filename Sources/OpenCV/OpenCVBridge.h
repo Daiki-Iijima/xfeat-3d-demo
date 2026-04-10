@@ -155,4 +155,36 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+// ---------------------------------------------------------------------------
+// SIFT Feature Extraction (used by LightGlueMatcher)
+// ---------------------------------------------------------------------------
+
+/// Raw SIFT features extracted from an image.
+@interface SIFTFeatures : NSObject
+/// Number of detected keypoints.
+@property (nonatomic, readonly) NSInteger count;
+/// Coordinate space of the keypoints.
+@property (nonatomic, readonly) CGSize procSize;
+/// count × 2 float32 values: [x0,y0, x1,y1, ...] in procSize space.
+@property (nonatomic, strong, readonly) NSData *keypointsXY;
+/// count × 128 float32 values (row-major). RootSIFT normalised.
+@property (nonatomic, strong, readonly) NSData *descriptors;
+/// count float32 values: keypoint scale (octave size in pixels).
+@property (nonatomic, strong, readonly) NSData *scales;
+/// count float32 values: keypoint orientation in radians.
+@property (nonatomic, strong, readonly) NSData *orientations;
+@end
+
+@interface OpenCVBridge (SIFTExtraction)
+/// Extract SIFT keypoints and RootSIFT-normalised descriptors from an image.
+/// The image is resized to procWidth × (procWidth * h/w) before extraction.
+/// @param image     Source frame.
+/// @param topK      Maximum number of keypoints to return.
+/// @param procWidth Width of the processing space (e.g. 960).
++ (nullable SIFTFeatures *)extractSIFTFrom:(UIImage *)image
+                                       topK:(int)topK
+                                  procWidth:(int)procWidth
+    NS_SWIFT_NAME(extractSIFT(from:topK:procWidth:));
+@end
+
 NS_ASSUME_NONNULL_END

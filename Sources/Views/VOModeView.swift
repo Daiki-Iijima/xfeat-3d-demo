@@ -39,6 +39,7 @@ struct VOModeView: View {
 
     // MARK: - Persisted Settings (UserDefaults via @AppStorage)
     @AppStorage("vo_markerSizeCM")         private var markerSizeCM:          Double = 15.0
+    @AppStorage("vo_targetMarkerID")       private var targetMarkerID:        Int    = -1
     @AppStorage("vo_minBootstrapParallax") private var minBootstrapParallax:  Double = 20.0
     @AppStorage("vo_minBootstrapCommon")   private var minBootstrapCommon:    Int    = 12
     @AppStorage("vo_minPnPInliers")        private var minPnPInliers:         Int    = 8
@@ -359,6 +360,7 @@ struct VOModeView: View {
     // MARK: - Apply Settings → Engine
 
     private func applySettings() {
+        voEngine.targetMarkerID        = targetMarkerID
         voEngine.markerSizeMeters      = Float(markerSizeCM) / 100.0
         voEngine.minBootstrapParallax  = Float(minBootstrapParallax)
         voEngine.minBootstrapCommon    = minBootstrapCommon
@@ -383,6 +385,24 @@ struct VOModeView: View {
                             value: $markerSizeCM,
                             in: 1...100, step: 0.5
                         )
+                    }
+                    HStack {
+                        Text("ブートストラップID")
+                        Spacer()
+                        Stepper(
+                            targetMarkerID < 0 ? "任意" : "ID: \(targetMarkerID)",
+                            value: $targetMarkerID,
+                            in: -1...999, step: 1
+                        )
+                    }
+                    if targetMarkerID >= 0 {
+                        Text("ID \(targetMarkerID) のマーカーのみ使用します。ブートストラップ後はArUco検出を停止し、マーカーは通常の特徴点として追跡されます。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("任意のArUcoマーカーを使用します。ブートストラップ後はArUco検出を停止します。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 Section("ブートストラップ") {
