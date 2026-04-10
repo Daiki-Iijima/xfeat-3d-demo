@@ -112,7 +112,17 @@ struct VOModeView: View {
             // ── Recovery keyframe thumbnail (top-right) ───────────────────
             if let kfImage = voEngine.recoveryKeyframeImage {
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text("KF").font(.system(size: 9, weight: .bold)).foregroundStyle(.white.opacity(0.7))
+                    HStack(spacing: 4) {
+                        Text("KF")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.7))
+                        Text("\(voEngine.activeKeyframeCount)A")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.green.opacity(0.9))
+                        Text("\(voEngine.dormantKeyframeCount)D")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.orange.opacity(0.9))
+                    }
                     Image(uiImage: kfImage)
                         .resizable()
                         .aspectRatio(contentMode: .fit)

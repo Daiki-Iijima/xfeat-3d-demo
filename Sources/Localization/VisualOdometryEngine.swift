@@ -54,6 +54,10 @@ final class VisualOdometryEngine: ObservableObject {
     @Published private(set) var lastTriangulatedIDs: Set<Int> = []
     /// True if the ArUco marker was detected within the last ~10 frames.
     @Published private(set) var isMarkerInView: Bool = false
+    /// Number of keyframes currently in the active state (recent enough to auto-check).
+    @Published private(set) var activeKeyframeCount: Int = 0
+    /// Number of keyframes currently dormant (only woken by thumbnail similarity).
+    @Published private(set) var dormantKeyframeCount: Int = 0
 
     private var lastMarkerFrame: Int = -999
 
@@ -95,35 +99,46 @@ final class VisualOdometryEngine: ObservableObject {
     /// regular feature points by PointTracker).
     private var bootstrapComplete: Bool = false
 
-    // MARK: - Recovery Keyframe
+    // MARK: - Recovery Keyframe Database
 
-    /// Keyframe saved periodically during tracking.
-    ///
-    /// Stores the raw procImage so that ALIKED features can be re-extracted fresh
-    /// at recovery time — ensuring both sides of the match use descriptors computed
-    /// from the same model run (no staleness from LK drift).
-    private struct RecoveryKeyframe {
+    /// One entry in the multi-keyframe database.
+    private struct StoredKeyframe {
         let image: UIImage
+        /// L2-normalised 64×48 grayscale vector — used for fast dormant-KF similarity gating.
+        let thumbnail: [Float]
         /// Visual map entry index → 2D pixel position in the keyframe image.
         let map2D: [(mapIdx: Int, pos2D: SIMD2<Float>)]
         let descDim: Int
+        /// Frame index at which this keyframe was saved.
+        let savedAtFrame: Int
+        /// Cached features (populated lazily on first recovery attempt).
+        var cachedALIKED: ALIKEDFeatures?
+        var cachedXFeat:  XFeatFeatures?
     }
 
-    private var recoveryKeyframe: RecoveryKeyframe?
-    /// Cached ALIKED/XFeat features extracted from `recoveryKeyframe.image`.
-    /// Reset whenever the keyframe is replaced.
-    private var cachedKFFeatures: (aliked: ALIKEDFeatures?, xfeat: XFeatFeatures?) = (nil, nil)
+    private var keyframes: [StoredKeyframe] = []
+    /// Counts up each frame while in .lost; reset to 0 on successful recovery.
+    private var lostFrameCount: Int = 0
 
-    /// Published image of the current recovery keyframe — for on-device debugging.
+    /// Published image of the most recently saved keyframe (for on-device debugging).
     @Published private(set) var recoveryKeyframeImage: UIImage?
 
     private var lastKeyframeFrame: Int = -999
-    /// Minimum frames between recovery keyframe updates.
+    /// Minimum frames between keyframe saves during tracking.
     var keyframeInterval: Int = 30
     /// Minimum frames between periodic drift-correction runs.
     var correctionInterval: Int = 60
-    /// Maximum pixel distance to associate a matched keyframe ALIKED point to a map entry.
+    /// Maximum pixel distance to associate a matched keyframe point to a map entry.
     var kfProximityPx: Float = 20.0
+    /// Maximum keyframes to keep (oldest removed when exceeded).
+    var maxKeyframes: Int = 20
+    /// Frames after which a keyframe transitions to dormant.
+    var dormancyDelay: Int = 150
+    /// During lost: check dormant KFs every N frames (thumbnail-similarity gated).
+    var dormantCheckInterval: Int = 5
+
+    private static let thumbW = 64
+    private static let thumbH = 48
 
     // MARK: - Bootstrap State
 
@@ -160,9 +175,11 @@ final class VisualOdometryEngine: ObservableObject {
         bootstrapDescriptors = []
         bootstrapPositions2D = []
         bootstrapComplete = false
-        recoveryKeyframe = nil
-        cachedKFFeatures = (nil, nil)
+        keyframes = []
+        lostFrameCount = 0
         recoveryKeyframeImage = nil
+        activeKeyframeCount = 0
+        dormantKeyframeCount = 0
         lastKeyframeFrame = -999
         triRefPose = nil
         triRefPositions = [:]
@@ -356,6 +373,7 @@ final class VisualOdometryEngine: ObservableObject {
         lastTriFrame = frameIndex
 
         bootstrapComplete = true
+        lostFrameCount = 0
         phase = .tracking
 
         // Save initial recovery keyframe immediately after bootstrap so that
@@ -363,7 +381,7 @@ final class VisualOdometryEngine: ObservableObject {
         let initialMatches = (0..<min(common.count, result.mapEntries.count)).map {
             (entryIdx: visualMap.count - result.mapEntries.count + $0, queryIdx: $0)
         }
-        updateRecoveryKeyframe(from: initialMatches, aliked: common, procImage: procImage, descDim: descDim)
+        addKeyframe(from: initialMatches, aliked: common, procImage: procImage, descDim: descDim)
 
         statusMessage = "初期化完了! マップ: \(mapPointCount)点"
     }
@@ -441,11 +459,17 @@ final class VisualOdometryEngine: ObservableObject {
 
         cameraPose = newPose
         pnpInlierCount = pnp.inlierCount
-        statusMessage = "追跡中 — PnP: \(pnp.inlierCount)点 | マップ: \(mapPointCount)点 | マッチ: \(matchCount)点"
+
+        // Update dormancy counts (cheap: just integer comparisons)
+        let kfActive = keyframes.filter { frameIndex - $0.savedAtFrame <= dormancyDelay }.count
+        activeKeyframeCount  = kfActive
+        dormantKeyframeCount = keyframes.count - kfActive
+
+        statusMessage = "追跡中 — PnP: \(pnp.inlierCount)点 | マップ: \(mapPointCount)点 | KF: \(activeKeyframeCount)A/\(dormantKeyframeCount)D"
 
         // Periodically save a recovery keyframe (ALIKED/XFeat descriptors)
         if frameIndex - lastKeyframeFrame >= keyframeInterval, !matches.isEmpty {
-            updateRecoveryKeyframe(from: matches, aliked: aliked, procImage: procImage, descDim: descDim)
+            addKeyframe(from: matches, aliked: aliked, procImage: procImage, descDim: descDim)
         }
 
         // Periodic drift correction: re-anchor pose via keyframe descriptor matching
@@ -511,161 +535,191 @@ final class VisualOdometryEngine: ObservableObject {
         lastTriFrame = frameIndex
     }
 
-    // MARK: - Descriptor Recovery (ALIKED / XFeat, no SIFT)
+    // MARK: - Descriptor Recovery (multi-keyframe, ALIKED / XFeat)
 
-    /// Attempt to recover pose by extracting fresh ALIKED or XFeat features
-    /// from the current frame and matching them against the saved recovery keyframe.
+    /// Try to recover from lost state by matching against stored keyframes.
     ///
-    /// Used for lost recovery. Does NOT rely on LK-tracked positions (which may
-    /// have drifted or become invalid during the lost state).
+    /// - Active keyframes (age ≤ dormancyDelay frames) are always tried.
+    /// - Dormant keyframes are gated by thumbnail similarity to the current frame,
+    ///   and only the top-2 similar ones are tried every `dormantCheckInterval` frames.
     private func tryDescriptorRecovery(
         procImage: UIImage,
         intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float)
     ) {
-        guard let kf = recoveryKeyframe else {
-            phase = .lost
+        guard !keyframes.isEmpty else {
             statusMessage = "キーフレームなし — ロスト (tracking後に自動保存)"
-            print("[VO] DescRecovery: no keyframe saved yet")
             return
         }
 
-        print("[VO] Recovery: map2D=\(kf.map2D.count) descDim=\(kf.descDim) map=\(visualMap.count)")
+        lostFrameCount += 1
 
-        // ── Step 1: get keyframe ALIKED features (extract once, then cache) ──
-        let kfKPs:   [SIMD2<Float>]
-        let kfDescs: [Float]
-        let descDim = kf.descDim
+        // Compute thumbnail similarity for dormant gating
+        let currentThumb = makeThumbnail(from: procImage)
 
-        if descDim == 128 {
-            let feats: ALIKEDFeatures
-            if let cached = cachedKFFeatures.aliked {
-                feats = cached
+        var activeIndices:  [Int] = []
+        var dormantSims: [(idx: Int, sim: Float)] = []
+        for (i, kf) in keyframes.enumerated() {
+            if frameIndex - kf.savedAtFrame <= dormancyDelay {
+                activeIndices.append(i)
             } else {
-                guard let f = ALIKEDMatcher.shared.extractFeatures(from: kf.image), f.count > 0 else {
-                    phase = .lost; statusMessage = "KF ALIKED抽出失敗 — ロスト"; return
-                }
-                cachedKFFeatures.aliked = f
-                feats = f
+                dormantSims.append((i, thumbnailSimilarity(currentThumb, kf.thumbnail)))
             }
-            kfKPs = feats.keypoints; kfDescs = feats.descriptors
-        } else {
-            let feats: XFeatFeatures
-            if let cached = cachedKFFeatures.xfeat {
-                feats = cached
-            } else {
-                guard let f = XFeatMatcher.shared.extractFeatures(from: kf.image), f.count > 0 else {
-                    phase = .lost; statusMessage = "KF XFeat抽出失敗 — ロスト"; return
-                }
-                cachedKFFeatures.xfeat = f
-                feats = f
-            }
-            kfKPs = feats.keypoints; kfDescs = feats.descriptors
         }
-        print("[VO] Recovery: KF \(kfKPs.count) pts")
+        dormantSims.sort { $0.sim > $1.sim }
 
-        // ── Step 2: extract fresh features from the current frame ────────────
+        activeKeyframeCount  = activeIndices.count
+        dormantKeyframeCount = dormantSims.count
+
+        // Build candidate list
+        var candidates = activeIndices
+        if lostFrameCount % dormantCheckInterval == 0 {
+            candidates += dormantSims.prefix(2).map { $0.idx }
+        }
+        print("[VO] Recovery: active=\(activeIndices.count) dormant=\(dormantSims.count) candidates=\(candidates.count) lostFrame=\(lostFrameCount)")
+
+        guard !candidates.isEmpty else {
+            statusMessage = "全KF休眠 — ロスト (復帰間隔待機中)"
+            return
+        }
+
+        // Extract current frame features ONCE (reused across all KF attempts)
+        let descDim = keyframes[candidates[0]].descDim
         let curKPs:   [SIMD2<Float>]
         let curDescs: [Float]
         if descDim == 128 {
             guard let f = ALIKEDMatcher.shared.extractFeatures(from: procImage), f.count > 0 else {
-                phase = .lost; statusMessage = "現フレームALIKED抽出失敗 — ロスト"; return
+                statusMessage = "現フレームALIKED抽出失敗 — ロスト"; return
             }
             curKPs = f.keypoints; curDescs = f.descriptors
         } else {
             guard let f = XFeatMatcher.shared.extractFeatures(from: procImage), f.count > 0 else {
-                phase = .lost; statusMessage = "現フレームXFeat抽出失敗 — ロスト"; return
+                statusMessage = "現フレームXFeat抽出失敗 — ロスト"; return
             }
             curKPs = f.keypoints; curDescs = f.descriptors
         }
-        print("[VO] Recovery: current \(curKPs.count) pts")
 
-        // ── Step 3: mutual NN between KF features and current features ────────
+        // Try each candidate keyframe
+        for idx in candidates {
+            if let pose = tryRecoverFromKeyframe(
+                idx: idx, curKPs: curKPs, curDescs: curDescs, intrinsics: intrinsics
+            ) {
+                cameraPose = pose
+                phase = .tracking
+                lostFrameCount = 0
+                statusMessage = "KF[\(idx)]で復帰! アクティブ:\(activeKeyframeCount) 休眠:\(dormantKeyframeCount)"
+                return
+            }
+        }
+
+        statusMessage = "復帰失敗 — KF: \(activeKeyframeCount)アクティブ / \(dormantKeyframeCount)休眠"
+    }
+
+    /// Try to recover pose from a single stored keyframe. Returns the recovered pose or nil.
+    private func tryRecoverFromKeyframe(
+        idx: Int,
+        curKPs:   [SIMD2<Float>],
+        curDescs: [Float],
+        intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float)
+    ) -> simd_float4x4? {
+        var kf = keyframes[idx]
+        let descDim = kf.descDim
+
+        // Get (or lazily extract and cache) KF features
+        let kfKPs:   [SIMD2<Float>]
+        let kfDescs: [Float]
+        if descDim == 128 {
+            if let cached = kf.cachedALIKED {
+                kfKPs = cached.keypoints; kfDescs = cached.descriptors
+            } else {
+                guard let f = ALIKEDMatcher.shared.extractFeatures(from: kf.image), f.count > 0 else { return nil }
+                kf.cachedALIKED = f
+                keyframes[idx] = kf
+                kfKPs = f.keypoints; kfDescs = f.descriptors
+            }
+        } else {
+            if let cached = kf.cachedXFeat {
+                kfKPs = cached.keypoints; kfDescs = cached.descriptors
+            } else {
+                guard let f = XFeatMatcher.shared.extractFeatures(from: kf.image), f.count > 0 else { return nil }
+                kf.cachedXFeat = f
+                keyframes[idx] = kf
+                kfKPs = f.keypoints; kfDescs = f.descriptors
+            }
+        }
+
+        // Mutual NN
         let pairs = mutualNNRaw(
             desc1: kfDescs, count1: kfKPs.count,
             desc2: curDescs, count2: curKPs.count,
             descDim: descDim, threshold: 0.60
         )
-        print("[VO] Recovery: NN pairs=\(pairs.count)")
+        print("[VO] KF[\(idx)]: pairs=\(pairs.count) map2D=\(kf.map2D.count)")
+        guard pairs.count >= minPnPInliers else { return nil }
 
-        // ── Step 4: associate KF ALIKED points to map entries by proximity ────
+        // 3D-2D via proximity to map2D
         var pts3D = [Float]()
         var pts2D = [Float]()
-        for (kfIdx, curIdx) in pairs {
-            let kfKP = kfKPs[kfIdx]
+        for (kfPtIdx, curPtIdx) in pairs {
+            let kfKP = kfKPs[kfPtIdx]
             guard let best = kf.map2D.min(by: {
                 simd_length($0.pos2D - kfKP) < simd_length($1.pos2D - kfKP)
             }), simd_length(best.pos2D - kfKP) < kfProximityPx,
             best.mapIdx < visualMap.entries.count else { continue }
-
             let pos3D = visualMap.entries[best.mapIdx].position
-            let curKP = curKPs[curIdx]
+            let curKP = curKPs[curPtIdx]
             pts3D.append(pos3D.x); pts3D.append(pos3D.y); pts3D.append(pos3D.z)
             pts2D.append(curKP.x); pts2D.append(curKP.y)
         }
         let count = pts3D.count / 3
-        print("[VO] Recovery: 3D-2D pairs=\(count) (need \(minPnPInliers))")
+        print("[VO] KF[\(idx)]: 3D-2D=\(count) (need \(minPnPInliers))")
+        guard count >= minPnPInliers else { return nil }
 
-        guard count >= minPnPInliers else {
-            phase = .lost
-            statusMessage = "3D対応点不足 (\(count)/\(minPnPInliers)) — ロスト"
-            return
-        }
-
-        // ── Step 5: solvePnP ─────────────────────────────────────────────────
         let (fx, fy, cx, cy) = intrinsics
         let pnp = OpenCVBridge.solvePnP(
             points3D: Data(bytes: pts3D, count: pts3D.count * 4),
             points2D: Data(bytes: pts2D, count: pts2D.count * 4),
             count: count, fx: fx, fy: fy, cx: cx, cy: cy
         )
-        print("[VO] Recovery: PnP success=\(pnp.success) inliers=\(pnp.inlierCount)/\(minPnPInliers)")
-
-        if pnp.success, pnp.inlierCount >= minPnPInliers {
-            cameraPose = buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector).inverse
-            phase = .tracking
-            statusMessage = "キーフレームマッチで復帰! インライア: \(pnp.inlierCount)点"
-        } else {
-            phase = .lost
-            statusMessage = "復帰PnP失敗 (inliers=\(pnp.inlierCount)/\(minPnPInliers)) — ロスト"
-        }
+        print("[VO] KF[\(idx)]: PnP success=\(pnp.success) inliers=\(pnp.inlierCount)/\(minPnPInliers)")
+        guard pnp.success, pnp.inlierCount >= minPnPInliers else { return nil }
+        return buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector).inverse
     }
 
     // MARK: - Periodic Drift Correction
 
-    /// Re-anchor the current pose by matching already-tracked ALIKED/XFeat points
-    /// against the recovery keyframe via fresh descriptor extraction (cached after first call).
+    /// Re-anchor the current pose using the most recent active keyframe.
+    /// KF features are cached after the first extraction, making repeated calls cheap.
     private func periodicCorrection(
         aliked: [TrackedPoint],
         intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float),
         descDim: Int
     ) {
-        guard let kf = recoveryKeyframe, kf.descDim == descDim else { return }
+        // Use most recent keyframe with matching descDim (active or dormant — doesn't matter)
+        guard let kfIdx = keyframes.indices.last(where: { keyframes[$0].descDim == descDim }) else { return }
         let M = aliked.count
         guard M >= minPnPInliers else { return }
 
-        // Use cached KF features (extract once, reuse)
+        var kf = keyframes[kfIdx]
+
+        // Lazily extract and cache KF features
         let kfKPs: [SIMD2<Float>]
         let kfDescs: [Float]
         if descDim == 128 {
-            let feats: ALIKEDFeatures
-            if let cached = cachedKFFeatures.aliked {
-                feats = cached
+            if let cached = kf.cachedALIKED {
+                kfKPs = cached.keypoints; kfDescs = cached.descriptors
             } else {
                 guard let f = ALIKEDMatcher.shared.extractFeatures(from: kf.image), f.count > 0 else { return }
-                cachedKFFeatures.aliked = f
-                feats = f
+                kf.cachedALIKED = f; keyframes[kfIdx] = kf
+                kfKPs = f.keypoints; kfDescs = f.descriptors
             }
-            kfKPs = feats.keypoints; kfDescs = feats.descriptors
         } else {
-            let feats: XFeatFeatures
-            if let cached = cachedKFFeatures.xfeat {
-                feats = cached
+            if let cached = kf.cachedXFeat {
+                kfKPs = cached.keypoints; kfDescs = cached.descriptors
             } else {
                 guard let f = XFeatMatcher.shared.extractFeatures(from: kf.image), f.count > 0 else { return }
-                cachedKFFeatures.xfeat = f
-                feats = f
+                kf.cachedXFeat = f; keyframes[kfIdx] = kf
+                kfKPs = f.keypoints; kfDescs = f.descriptors
             }
-            kfKPs = feats.keypoints; kfDescs = feats.descriptors
         }
 
         // Build L2-normalised query matrix from tracked points
@@ -687,8 +741,8 @@ final class VisualOdometryEngine: ObservableObject {
 
         var pts3D = [Float]()
         var pts2D = [Float]()
-        for (kfIdx, queryIdx) in pairs {
-            let kfKP = kfKPs[kfIdx]
+        for (kfPtIdx, queryIdx) in pairs {
+            let kfKP = kfKPs[kfPtIdx]
             guard let best = kf.map2D.min(by: {
                 simd_length($0.pos2D - kfKP) < simd_length($1.pos2D - kfKP)
             }), simd_length(best.pos2D - kfKP) < kfProximityPx,
@@ -709,15 +763,14 @@ final class VisualOdometryEngine: ObservableObject {
         )
         if pnp.success, pnp.inlierCount >= minPnPInliers {
             cameraPose = buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector).inverse
-            print("[VO] Correction: inliers=\(pnp.inlierCount)")
+            print("[VO] Correction KF[\(kfIdx)]: inliers=\(pnp.inlierCount)")
         }
     }
 
     // MARK: - Keyframe Helpers
 
-    /// Save the current frame as recovery keyframe, recording which PnP-matched positions
-    /// correspond to which map entries (for proximity-based association at recovery time).
-    private func updateRecoveryKeyframe(
+    /// Add a new keyframe to the database from the current PnP matches.
+    private func addKeyframe(
         from matches: [(entryIdx: Int, queryIdx: Int)],
         aliked: [TrackedPoint],
         procImage: UIImage,
@@ -728,10 +781,49 @@ final class VisualOdometryEngine: ObservableObject {
             return (mapIdx: m.entryIdx, pos2D: aliked[m.queryIdx].position)
         }
         guard !map2D.isEmpty else { return }
-        recoveryKeyframe = RecoveryKeyframe(image: procImage, map2D: map2D, descDim: descDim)
-        cachedKFFeatures = (nil, nil)   // invalidate cache so features are re-extracted from new image
+
+        let kf = StoredKeyframe(
+            image: procImage,
+            thumbnail: makeThumbnail(from: procImage),
+            map2D: map2D,
+            descDim: descDim,
+            savedAtFrame: frameIndex,
+            cachedALIKED: nil,
+            cachedXFeat: nil
+        )
+        keyframes.append(kf)
+        if keyframes.count > maxKeyframes { keyframes.removeFirst() }
+
         recoveryKeyframeImage = procImage
         lastKeyframeFrame = frameIndex
+
+        let active = keyframes.filter { frameIndex - $0.savedAtFrame <= dormancyDelay }.count
+        activeKeyframeCount  = active
+        dormantKeyframeCount = keyframes.count - active
+    }
+
+    /// Build a small L2-normalised grayscale thumbnail from an image.
+    private func makeThumbnail(from image: UIImage) -> [Float] {
+        let W = Self.thumbW, H = Self.thumbH
+        let grayData = OpenCVBridge.toGray(image, width: Int32(W), height: Int32(H))
+        let n = W * H
+        var v = [Float](repeating: 0, count: n)
+        grayData.withUnsafeBytes { ptr in
+            let bytes = ptr.bindMemory(to: UInt8.self)
+            for i in 0..<n { v[i] = Float(bytes[i]) }
+        }
+        var norm2: Float = 0
+        vDSP_svesq(v, 1, &norm2, vDSP_Length(n))
+        let scale = 1.0 / max(sqrtf(norm2), 1e-8)
+        vDSP_vsmul(v, 1, [scale], &v, 1, vDSP_Length(n))
+        return v
+    }
+
+    /// Cosine similarity between two L2-normalised thumbnail vectors.
+    private func thumbnailSimilarity(_ a: [Float], _ b: [Float]) -> Float {
+        var dot: Float = 0
+        vDSP_dotpr(a, 1, b, 1, &dot, vDSP_Length(min(a.count, b.count)))
+        return dot
     }
 
     /// Mutual nearest-neighbour matching between two descriptor matrices using BLAS.
