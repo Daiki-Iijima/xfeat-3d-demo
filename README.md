@@ -1,150 +1,148 @@
-# XFeat 3D — iPad向けビジュアル3D復元アプリ
+# XFeat3D — ArUco初期化 VO + 多キーフレームロスト復帰 (iPad)
 
-階層的特徴点トラッキング（ORB → XFeat → ALIKED）とOpenCVによるEssential Matrix推定を用いたモノキュラー3D点群復元アプリ。MeshLab・CloudCompare・Blenderで開けるカラー付き `.ply` ファイルを出力します。
+ArUco マーカーで座標系を確立し、ALIKED/XFeat 記述子ベースの PnP で自己位置推定を行う iPad 向け Visual Odometry アプリ。
+ロスト時には最大 20 枚のキーフレームデータベースを照合してポーズを復帰する。
 
-## 機能
+## 主な機能
 
-- **階層的トラッキング** — ORB（高速）→ XFeat（64次元）→ ALIKED（128次元）、xfeat-ipad-demoと同パイプライン
-- **階層別色分けオーバーレイ** — 赤 = ORB、青 = XFeat、緑 = ALIKED
-- **キーフレームベース3D復元** — Essential Matrix（RANSAC）+ Nフレームごとの三角測量
-- **IMU姿勢** — CoreMotionによる回転推定（スケール曖昧性の解消補助）
-- **SceneKitプレビュー** — デバイス上でリアルタイム回転する3D点群表示
-- **PLY出力** — iOSの共有シートを介してカラー付きASCII PLYを書き出し
+- **ArUco ブートストラップ** — 5×5 ArUco マーカーでメートルスケールの世界座標系を確立。ターゲット ID 指定可能。ブートストラップ完了後はマーカーを通常特徴点として扱う
+- **階層的トラッキング** — ORB(10f) → XFeat(30f) → ALIKED(45f) の非同期パイプライン + LK オプティカルフロー。上位ティアが下位ティアの点をインプレースでプロモート
+- **PnP 自己位置推定** — ALIKED 128次元記述子で VisualMap と照合 → solvePnP RANSAC
+- **マップ自動成長** — `triInterval`(20f) ごとに三角測量で新規 3D 点を追加
+- **多キーフレームロスト復帰** — 最大 20 枚の KF を保持。アクティブ KF は全件試行、休眠 KF はサムネイル類似度でゲーティング
+- **定期ドリフト補正** — `correctionInterval`(60f) ごとに最新 KF と照合して姿勢をサイレント補正
 
 ## 動作環境
 
-- iPad（iOS 17.0以上）
-- Xcode 15以上
+- iPad (iOS 17.0 以上)
+- Xcode 15 以上
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen): `brew install xcodegen`
-- `xfeat-ipad-demo` からコピーしたCoreMLモデル（既設置済み）
 
 ## ビルド手順
 
 ```bash
 xcodegen generate
 open XFeat3D.xcodeproj
+# Signing & Capabilities でチームを設定してビルド
 ```
 
-## プロジェクト構成
+## VO パイプライン
 
-<!-- AUTO-GENERATED from Sources/ -->
+```
+ARKit フレーム (毎フレーム)
+  │
+  ▼ ARSessionManager
+  procImage: UIImage (960×720)
+  intrinsics: (fx, fy, cx, cy)
+  │
+  ▼ PointTracker.update(frame)
+  LK フロー → 全点追跡
+  非同期再検出: ORB/XFeat/ALIKED
+  │ [TrackedPoint]
+  ▼ VisualOdometryEngine.processFrame(...)
+  │
+  ├─[Searching]── ArUco 検出 → bootstrapPose 蓄積
+  ├─[Bootstrapping]── 視差確認 → triangulate → VisualMap 初期化
+  ├─[Tracking]──── findMatches → solvePnP → growMap
+  └─[Lost]──────── KFデータベース照合 → 復帰
+```
+
+## VO ステートマシン
+
+| Phase | 状態 | 遷移条件 |
+|---|---|---|
+| Searching | ArUco を探す | ArUco(ID一致) + ALIKED≥12点 → Bootstrapping |
+| Bootstrapping | 視差待機 → 三角測量 | マップ点≥8 → Tracking / 共通点不足 → Searching |
+| Tracking | PnP 自己位置推定 | PnP失敗/マッチ<6 → Lost |
+| Lost | KF照合で復帰試行 | PnP成功 → Tracking / bootstrapComplete==false → Searching |
+
+## キーフレームデータベース
+
+| 設定 | デフォルト | 説明 |
+|---|---|---|
+| `maxKeyframes` | 20枚 | DB上限。超過時は最古を削除 |
+| `keyframeInterval` | 30f | 保存間隔 (Tracking中) |
+| `dormancyDelay` | 150f | 保存から何フレームでアクティブ→休眠 |
+| `dormantCheckInterval` | 5f | ロスト中に休眠KFを試行する間隔 |
+
+**アクティブ KF** (age ≤ 150f): ロスト時は毎回全件試行  
+**休眠 KF** (age > 150f): 5フレームごとに 64×48 サムネイルのコサイン類似度で上位2件をウェイクアップして試行
+
+## プロジェクト構成
 
 ```
 Sources/
 ├── App/
-│   └── XFeat3DApp.swift             アプリエントリポイント (@main)
+│   └── XFeat3DApp.swift             @main エントリポイント
 ├── Camera/
-│   ├── CameraManager.swift          AVFoundationキャプチャ + 向き制御
-│   └── CameraPreviewView.swift      プレビューレイヤー SwiftUIラッパー
-├── Tracking/                        (xfeat-ipad-demoと共有)
-│   ├── PointTracker.swift           階層的ORB→XFeat→ALIKEDトラッカー
-│   ├── TrackedPoint.swift           id、位置、ディスクリプタ、階層
-│   ├── TrackTier.swift              orb < xfeat < aliked
-│   └── TrackingExtractor.swift      抽出器ストラテジー
-├── Reconstruction/
-│   ├── ReconstructionEngine.swift   キーフレーム選択、Essential Matrix、三角測量
-│   ├── MotionManager.swift          CoreMotion姿勢ラッパー
-│   ├── PointCloud.swift             マージ半径による重複除去付き3D点群蓄積
-│   └── PLYExporter.swift            RGB色 + 信頼度付きASCII PLY出力
-├── Views/
-│   ├── ContentView.swift            カメラオーバーレイ + コントロール + 設定シート
-│   └── PointCloudView.swift         SCNGeometryポイントプリミティブレンダラー
-├── XFeat/
-│   ├── XFeatMatcher.swift
-│   └── XFeat.mlpackage
+│   ├── ARSessionManager.swift        ARKit セッション + procImage 配信
+│   └── CameraPreviewView.swift       ARSCNView SwiftUI ラッパー
+├── Tracking/
+│   ├── PointTracker.swift            階層的 ORB→XFeat→ALIKED トラッカー
+│   ├── TrackedPoint.swift            id / position / descriptor / tier
+│   ├── TrackTier.swift               orb < xfeat < aliked
+│   └── TrackingExtractor.swift       抽出器ストラテジー enum
+├── Localization/                     ← VO コアモジュール
+│   ├── VisualOdometryEngine.swift    状態機械 / PnP / KFデータベース / 復帰
+│   └── VisualMap.swift               インメモリ 3D マップ (BLAS GEMM マッチング)
+├── OpenCV/
+│   ├── OpenCVBridge.h/mm             LKフロー / ORB / ArUco / PnP / 三角測量
+│   ├── XFeat3D-Bridging-Header.h
+│   └── opencv2.xcframework
 ├── ALIKED/
-│   ├── ALIKEDMatcher.swift
+│   ├── ALIKEDMatcher.swift           CoreML 128次元記述子抽出
 │   └── ALIKED.mlpackage
+├── XFeat/
+│   ├── XFeatMatcher.swift            CoreML 64次元記述子抽出
+│   └── XFeat.mlpackage
 ├── SuperPoint/
-│   ├── SuperPointMatcher.swift
+│   ├── SuperPointMatcher.swift       CoreML (single-extractor モード)
 │   └── SuperPoint.mlpackage
-└── OpenCV/
-    ├── OpenCVBridge.h/mm            LKフロー、ORB検出、recoverPose、triangulatePoints
-    ├── XFeat3D-Bridging-Header.h
-    └── opencv2.xcframework
+├── Views/
+│   ├── ContentView.swift             ルートビュー
+│   ├── VOModeView.swift              VO UI / オーバーレイ / 設定シート
+│   └── PointCloudView.swift          SceneKit 3D点群ビューア
+└── Reconstruction/                   (レガシー復元モード)
+    ├── ReconstructionEngine.swift
+    ├── PointCloud.swift
+    ├── PLYExporter.swift
+    └── MotionManager.swift
 ```
-
-<!-- END AUTO-GENERATED -->
-
-## 3D復元パイプライン
-
-<!-- AUTO-GENERATED from ReconstructionEngine.swift -->
-
-```
-フレーム N
-  │
-  ├─► PointTracker.update(frame)
-  │       LKオプティカルフロー → 全階層
-  │       定期的な再検出（ORB/XFeat/ALIKED）
-  │
-  └─► ReconstructionEngine.processFrame(alikedPoints, frame)
-          │
-          ├─ keyframeInterval フレームごと:
-          │     十分な視差を持つALIKED階層点をフィルタリング
-          │     pts1（前キーフレーム）/ pts2（現在）を構築
-          │     OpenCV.recoverPose → R, t（スケール不定）
-          │     OpenCV.triangulatePoints → ローカル3D
-          │     グローバル座標系へ変換（累積 R, t）
-          │     フィルタリング: depth ∈ (0.01, 50)
-          │     PointCloud.add → マージ半径による重複除去
-          │
-          └─ PointCloud.points → SceneKit + PLY出力
-```
-
-<!-- END AUTO-GENERATED -->
 
 ## 主要パラメータ
 
-<!-- AUTO-GENERATED from ReconstructionEngine.swift defaults -->
-
 | パラメータ | デフォルト | 説明 |
-|-----------|---------|-------------|
-| `keyframeInterval` | 15フレーム | 3D復元がトリガーされる間隔 |
-| `minParallax` | 8px | トリガーに必要な平均点移動量の最小値 |
-| `minAlikedPoints` | 20 | 必要なALIKED階層点の最小数 |
-| `mergeRadius` | 0.02単位 | 点群内の重複抑制半径 |
-| `maxPoints` | 50,000 | 点群サイズの上限 |
-| `fx / fy` | 自動 | 焦点距離（`videoFieldOfView` から推定） |
-| `cx / cy` | 480 / 360 | 主点（処理解像度 960×720） |
+|---|---|---|
+| `targetMarkerID` | -1 (任意) | ブートストラップに使う ArUco ID |
+| `markerSizeMeters` | 0.15m | マーカー物理サイズ |
+| `minBootstrapParallax` | 20px | ブートストラップ最小視差 |
+| `minPnPInliers` | 8 | PnP 成功最小インライア数 |
+| `alikedInterval` | 45f | ALIKED 再検出間隔 |
+| `alikedBudget` | 300 | ALIKED 点数上限 |
+| `triInterval` | 20f | 三角測量間隔 |
+| `correctionInterval` | 60f | ドリフト補正間隔 |
 
-<!-- END AUTO-GENERATED -->
+## ドキュメント
+
+| ファイル | 説明 |
+|---|---|
+| `docs/workflow.drawio` | ステートマシン / フレーム処理 / KFデータベース フローチャート |
+| `docs/CODEMAPS.md` | ファイル別コードマップ・API・データフロー |
 
 ## 使用フレームワーク
 
-<!-- AUTO-GENERATED from project.yml -->
-
 | フレームワーク | 用途 |
-|-----------|---------|
-| `Accelerate` | ディスクリプタのコサイン類似度計算（BLAS GEMM） |
-| `CoreMotion` | IMU姿勢（ジャイロ + 加速度センサー融合） |
-| `SceneKit` | デバイス上3D点群プレビュー |
-| `opencv2.xcframework` | LKフロー、ORB検出、Essential Matrix、三角測量 |
-
-<!-- END AUTO-GENERATED -->
-
-## PLY出力フォーマット
-
-```
-ply
-format ascii 1.0
-element vertex N
-property float x
-property float y
-property float z
-property uchar red
-property uchar green
-property uchar blue
-property float confidence
-end_header
-x0 y0 z0 r g b conf
-...
-```
-
-開き方: **MeshLab**、**CloudCompare**、**Blender**（ファイル → インポート → Stanford PLY）、またはその他PLYビューア。
+|---|---|
+| ARKit | カメラフレーム取得・内部パラメータ |
+| Accelerate (BLAS) | 記述子コサイン類似度行列計算 (cblas_sgemm / vDSP) |
+| CoreML | ALIKED / XFeat / SuperPoint 推論 (CPU のみ) |
+| CoreMotion | ジャイロ・加速度 (ReconstructionEngine) |
+| SceneKit | 3D 点群プレビュー |
+| opencv2 | LK フロー / ORB / ArUco / Essential Matrix / 三角測量 / PnP |
 
 ## 制限事項
 
-- **スケール不定の復元** — ステレオや既知ベースラインなしではメートル単位のスケールは得られません。構造の形状は正しいですが、絶対距離は不正確です。
-- **ループ閉鎖なし** — 長いシーケンスで誤差が蓄積します。
-- **CPU専用CoreML** — XFeat/ALIKEDの出力テンソルのGPUストライドパディング問題を回避するためCPUのみ使用。
-- **iPad専用** — カメラ権限と向き処理はiPad向けに調整済み。
+- **ループ閉鎖なし** — 長時間走行で誤差が蓄積する
+- **地図はインメモリのみ** — アプリ終了で消滅 (セッション内は保持)
+- **CPU 専用 CoreML** — GPU のストライドパディング問題を回避するため
+- **iPad 専用** — カメラ権限と向き処理が iPad 向け設定

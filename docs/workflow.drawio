@@ -1,0 +1,560 @@
+<mxfile host="app.diagrams.net" version="21.0.0">
+
+  <!-- =====================================================================
+       Page 1: State Machine
+       ===================================================================== -->
+  <diagram id="page-state-machine" name="ステートマシン">
+    <mxGraphModel dx="1400" dy="800" grid="1" gridSize="10" guides="1"
+                  tooltips="1" connect="1" arrows="1" fold="1" page="1"
+                  pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- ── Title ── -->
+        <mxCell id="sm_title" value="XFeat3D — VO ステートマシン"
+          style="text;html=1;fontSize=20;fontStyle=1;align=center;"
+          vertex="1" parent="1">
+          <mxGeometry x="400" y="30" width="500" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- ── States ── -->
+        <mxCell id="sm_searching" value="🔍 Searching&#xa;&#xa;ArUcoマーカーを探す"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d6b656;fontSize=13;fontStyle=1;verticalAlign=middle;"
+          vertex="1" parent="1">
+          <mxGeometry x="80" y="280" width="180" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="sm_bootstrapping" value="⚙️ Bootstrapping&#xa;&#xa;視差確保 → 三角測量"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;fontStyle=1;verticalAlign=middle;"
+          vertex="1" parent="1">
+          <mxGeometry x="380" y="280" width="180" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="sm_tracking" value="✅ Tracking&#xa;&#xa;PnP自己位置推定"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;fontStyle=1;verticalAlign=middle;"
+          vertex="1" parent="1">
+          <mxGeometry x="700" y="280" width="180" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="sm_lost" value="❌ Lost&#xa;&#xa;KF照合で復帰試行"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;fontStyle=1;verticalAlign=middle;"
+          vertex="1" parent="1">
+          <mxGeometry x="700" y="480" width="180" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- ── Transitions ── -->
+
+        <!-- searching → bootstrapping -->
+        <mxCell id="sm_e1" value="ArUco検出(ID一致)&#xa;+ ALIKED ≥ 12点"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontSize=11;"
+          edge="1" source="sm_searching" target="sm_bootstrapping" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- bootstrapping → tracking -->
+        <mxCell id="sm_e2" value="三角測量成功&#xa;(マップ点 ≥ 8)"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontSize=11;"
+          edge="1" source="sm_bootstrapping" target="sm_tracking" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- bootstrapping → searching (fail) -->
+        <mxCell id="sm_e3" value="共通点不足 / 視差不足"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;exitX=0.5;exitY=0;entryX=0.5;entryY=0;fontSize=11;curved=1;"
+          edge="1" source="sm_bootstrapping" target="sm_searching" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="470" y="180"/>
+              <mxPoint x="170" y="180"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- tracking → lost -->
+        <mxCell id="sm_e4" value="PnP失敗 or マッチ &lt; 6"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;fontSize=11;"
+          edge="1" source="sm_tracking" target="sm_lost" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- lost → tracking (KF recovery) -->
+        <mxCell id="sm_e5" value="KF照合成功 (PnP通過)"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;exitX=1;exitY=0.5;entryX=1;entryY=0.5;fontSize=11;strokeColor=#82b366;fontColor=#006600;"
+          edge="1" source="sm_lost" target="sm_tracking" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="940" y="520"/>
+              <mxPoint x="940" y="320"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- lost → searching (before bootstrap) -->
+        <mxCell id="sm_e6" value="bootstrapComplete == false"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;exitX=0;exitY=0.5;entryX=0;entryY=0.5;fontSize=11;strokeColor=#b85450;fontColor=#b85450;"
+          edge="1" source="sm_lost" target="sm_searching" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="640" y="520"/>
+              <mxPoint x="40" y="520"/>
+              <mxPoint x="40" y="320"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ── Notes ── -->
+        <mxCell id="sm_note1" value="bootstrapComplete フラグ&#xa;一度 Tracking に入ると&#xa;ArUco検出は無効化される"
+          style="shape=note;whiteSpace=wrap;html=1;backgroundOutline=1;size=15;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="80" y="480" width="220" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="sm_note2" value="KFデータベース&#xa;最大20枚、アクティブ/休眠管理&#xa;詳細は KFデータベースページ参照"
+          style="shape=note;whiteSpace=wrap;html=1;backgroundOutline=1;size=15;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="960" y="450" width="220" height="80" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <!-- =====================================================================
+       Page 2: Per-Frame Processing Pipeline
+       ===================================================================== -->
+  <diagram id="page-pipeline" name="フレーム処理パイプライン">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1"
+                  tooltips="1" connect="1" arrows="1" fold="1" page="1"
+                  pageScale="1" pageWidth="1600" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- Title -->
+        <mxCell id="pp_title" value="フレーム処理パイプライン (毎フレーム実行)"
+          style="text;html=1;fontSize=18;fontStyle=1;align=center;"
+          vertex="1" parent="1">
+          <mxGeometry x="400" y="20" width="700" height="36" as="geometry"/>
+        </mxCell>
+
+        <!-- === Left column: input → dispatch === -->
+
+        <mxCell id="pp_arframe" value="ARKit ARFrame&#xa;(カメラフレーム + 姿勢 + 内部パラメータ)"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;"
+          vertex="1" parent="1">
+          <mxGeometry x="60" y="80" width="280" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_arsession" value="ARSessionManager&#xa;procImage (960×720 UIImage) を配信"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;"
+          vertex="1" parent="1">
+          <mxGeometry x="60" y="200" width="280" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_e_arframe_arsession" value=""
+          style="edgeStyle=orthogonalEdgeStyle;"
+          edge="1" source="pp_arframe" target="pp_arsession" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- PointTracker -->
+        <mxCell id="pp_pointtracker" value="PointTracker.update(frame)&#xa;&#xa;1. pending検出を統合 (ALIKED/XFeat/ORB)&#xa;2. LKオプティカルフロー → 全点を追跡&#xa;3. 非同期: ORB(10f) / XFeat(30f) / ALIKED(45f) 再検出スケジュール"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;align=left;"
+          vertex="1" parent="1">
+          <mxGeometry x="60" y="330" width="360" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_e_arsession_pt" value=""
+          style="edgeStyle=orthogonalEdgeStyle;"
+          edge="1" source="pp_arsession" target="pp_pointtracker" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- topDescriptorPoints -->
+        <mxCell id="pp_toppts" value="topDescriptorPoints()&#xa;ALIKED(128次元) → XFeat(64次元) の順で優先取得"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="60" y="490" width="360" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_e_pt_toppts" value="[TrackedPoint]"
+          style="edgeStyle=orthogonalEdgeStyle;fontSize=10;"
+          edge="1" source="pp_pointtracker" target="pp_toppts" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- descDim check -->
+        <mxCell id="pp_desccheck" value="descDim == 0 ?"
+          style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="130" y="600" width="160" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_e_toppts_check" value=""
+          style="edgeStyle=orthogonalEdgeStyle;"
+          edge="1" source="pp_toppts" target="pp_desccheck" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_orb_only" value="return (ORBのみ)"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="480" y="607" width="120" height="46" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_e_check_orb" value="Yes"
+          style="edgeStyle=orthogonalEdgeStyle;fontSize=10;"
+          edge="1" source="pp_desccheck" target="pp_orb_only" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Phase switch -->
+        <mxCell id="pp_phase_switch" value="switch phase"
+          style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;fontStyle=1;"
+          vertex="1" parent="1">
+          <mxGeometry x="130" y="710" width="160" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_e_check_switch" value="No"
+          style="edgeStyle=orthogonalEdgeStyle;fontSize=10;"
+          edge="1" source="pp_desccheck" target="pp_phase_switch" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- === Right column: phases === -->
+
+        <!-- searching/lost -->
+        <mxCell id="pp_marker_init" value="tryMarkerInit()&#xa;&#xa;OpenCV ArUco 5×5 検出&#xa;ID フィルタ (targetMarkerID)&#xa;bootstrapPose / bootstrapDescriptors を更新"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d6b656;fontSize=11;align=left;"
+          vertex="1" parent="1">
+          <mxGeometry x="500" y="660" width="280" height="90" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_e_switch_search" value=".searching / .lost(boot前)"
+          style="edgeStyle=orthogonalEdgeStyle;fontSize=10;"
+          edge="1" source="pp_phase_switch" target="pp_marker_init" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- lost (after bootstrap) -->
+        <mxCell id="pp_desc_recovery" value="tryDescriptorRecovery()&#xa;&#xa;KFデータベース照合&#xa;詳細は KFデータベースページ参照"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;align=left;"
+          vertex="1" parent="1">
+          <mxGeometry x="500" y="770" width="280" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_e_switch_lost" value=".lost(boot後)"
+          style="edgeStyle=orthogonalEdgeStyle;fontSize=10;"
+          edge="1" source="pp_phase_switch" target="pp_desc_recovery" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- bootstrapping -->
+        <mxCell id="pp_bootstrap" value="tryBootstrap()&#xa;&#xa;記述子マッチ → 視差チェック → ArUco or Essential Matrix&#xa;triangulatePoints → mapEntries(≥8) → VisualMap.add&#xa;初回 addKeyframe 保存"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;align=left;"
+          vertex="1" parent="1">
+          <mxGeometry x="800" y="680" width="320" height="90" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_e_switch_boot" value=".bootstrapping"
+          style="edgeStyle=orthogonalEdgeStyle;fontSize=10;"
+          edge="1" source="pp_phase_switch" target="pp_bootstrap" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="210" y="745"/>
+              <mxPoint x="210" y="725"/>
+              <mxPoint x="960" y="725"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- tracking -->
+        <mxCell id="pp_tracking" value="trackingStep()"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;fontStyle=1;"
+          vertex="1" parent="1">
+          <mxGeometry x="800" y="800" width="200" height="50" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_e_switch_track" value=".tracking"
+          style="edgeStyle=orthogonalEdgeStyle;fontSize=10;"
+          edge="1" source="pp_phase_switch" target="pp_tracking" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="210" y="745"/>
+              <mxPoint x="210" y="825"/>
+              <mxPoint x="800" y="825"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ── trackingStep detail ── -->
+        <mxCell id="pp_track_match" value="VisualMap.findMatches()&#xa;query記述子 vs マップ全点 (BLAS GEMM)&#xa;相互最近傍 threshold=0.70"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;align=left;"
+          vertex="1" parent="1">
+          <mxGeometry x="1060" y="780" width="300" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_e_track_match" value=""
+          style="edgeStyle=orthogonalEdgeStyle;"
+          edge="1" source="pp_tracking" target="pp_track_match" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_pnp" value="solvePnP RANSAC&#xa;3D-2D対応 → カメラ姿勢推定&#xa;成功条件: inliers ≥ 8"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;align=left;"
+          vertex="1" parent="1">
+          <mxGeometry x="1060" y="890" width="300" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_e_match_pnp" value=""
+          style="edgeStyle=orthogonalEdgeStyle;"
+          edge="1" source="pp_track_match" target="pp_pnp" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_periodic" value="定期処理 (フレームカウンタ制御)&#xa;&#xa;• addKeyframe (keyframeInterval=30f)&#xa;• periodicCorrection (correctionInterval=60f)&#xa;• growMap / triangulatePoints (triInterval=20f)"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;align=left;"
+          vertex="1" parent="1">
+          <mxGeometry x="1060" y="990" width="300" height="90" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_e_pnp_periodic" value="成功時"
+          style="edgeStyle=orthogonalEdgeStyle;fontSize=10;"
+          edge="1" source="pp_pnp" target="pp_periodic" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_pnp_fail" value="phase = .lost"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="1400" y="897" width="120" height="46" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_e_pnp_fail" value="失敗"
+          style="edgeStyle=orthogonalEdgeStyle;fontSize=10;"
+          edge="1" source="pp_pnp" target="pp_pnp_fail" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- VisualMap store -->
+        <mxCell id="pp_vmap" value="VisualMap (メモリ)&#xa;3D点 + 128次元記述子"
+          style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="800" y="990" width="180" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_e_bootstrap_vmap" value="初期マップ点"
+          style="edgeStyle=orthogonalEdgeStyle;fontSize=10;dashed=1;"
+          edge="1" source="pp_bootstrap" target="pp_vmap" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pp_e_periodic_vmap" value="growMap追加"
+          style="edgeStyle=orthogonalEdgeStyle;fontSize=10;dashed=1;"
+          edge="1" source="pp_periodic" target="pp_vmap" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <!-- =====================================================================
+       Page 3: KF Database & Lost Recovery
+       ===================================================================== -->
+  <diagram id="page-kf" name="KFデータベース / ロスト復帰">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1"
+                  tooltips="1" connect="1" arrows="1" fold="1" page="1"
+                  pageScale="1" pageWidth="1600" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- Title -->
+        <mxCell id="kf_title" value="キーフレームデータベース &amp; ロスト復帰フロー"
+          style="text;html=1;fontSize=18;fontStyle=1;align=center;"
+          vertex="1" parent="1">
+          <mxGeometry x="350" y="20" width="700" height="36" as="geometry"/>
+        </mxCell>
+
+        <!-- ── StoredKeyframe struct ── -->
+        <mxCell id="kf_struct_title" value="StoredKeyframe 構造体"
+          style="text;html=1;fontSize=14;fontStyle=1;"
+          vertex="1" parent="1">
+          <mxGeometry x="60" y="80" width="300" height="30" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_struct" value="image: UIImage&#xa;thumbnail: [Float]  ← 64×48 L2正規化グレースケール&#xa;map2D: [(mapIdx, pos2D)]  ← KF内特徴点 → マップインデックス&#xa;descDim: Int  ← 128(ALIKED) or 64(XFeat)&#xa;savedAtFrame: Int&#xa;cachedALIKED / cachedXFeat  ← 遅延初期化"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;align=left;fontFamily=Courier New;"
+          vertex="1" parent="1">
+          <mxGeometry x="60" y="110" width="440" height="110" as="geometry"/>
+        </mxCell>
+
+        <!-- ── DB management ── -->
+        <mxCell id="kf_db_title" value="データベース管理 (addKeyframe)"
+          style="text;html=1;fontSize=14;fontStyle=1;"
+          vertex="1" parent="1">
+          <mxGeometry x="60" y="250" width="340" height="30" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_add" value="addKeyframe() — Tracking中に定期保存 (keyframeInterval=30f)&#xa;&#xa;1. PnP対応点の位置 → map2D を構築&#xa;2. makeThumbnail(procImage) → 64×48グレー → L2正規化&#xa;3. keyframes.append(StoredKeyframe(...))&#xa;4. 最大枚数超過時は先頭(最古)を削除&#xa;5. activeKeyframeCount / dormantKeyframeCount を更新"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;align=left;"
+          vertex="1" parent="1">
+          <mxGeometry x="60" y="280" width="500" height="110" as="geometry"/>
+        </mxCell>
+
+        <!-- Dormancy timeline -->
+        <mxCell id="kf_dormancy_title" value="アクティブ / 休眠 の遷移"
+          style="text;html=1;fontSize=14;fontStyle=1;"
+          vertex="1" parent="1">
+          <mxGeometry x="60" y="420" width="300" height="30" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_active_box" value="🟢 アクティブ&#xa;savedAtFrame から dormancyDelay(150f) 以内"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;"
+          vertex="1" parent="1">
+          <mxGeometry x="60" y="455" width="280" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_dormant_box" value="🟠 休眠&#xa;150f 超過 → 自動でサムネイル照合のみ"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d6b656;fontSize=12;"
+          vertex="1" parent="1">
+          <mxGeometry x="420" y="455" width="280" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_e_active_dormant" value="150フレーム経過"
+          style="edgeStyle=orthogonalEdgeStyle;fontSize=11;"
+          edge="1" source="kf_active_box" target="kf_dormant_box" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_e_dormant_active" value="復帰成功で再アクティブ化はしない&#xa;(ポーズ取得で tracking に移行)"
+          style="edgeStyle=orthogonalEdgeStyle;fontSize=10;dashed=1;strokeColor=#999999;"
+          edge="1" source="kf_dormant_box" target="kf_active_box" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="560" y="560"/>
+              <mxPoint x="200" y="560"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ── Lost Recovery flow ── -->
+        <mxCell id="kf_recovery_title" value="ロスト復帰フロー (tryDescriptorRecovery)"
+          style="text;html=1;fontSize=14;fontStyle=1;"
+          vertex="1" parent="1">
+          <mxGeometry x="800" y="80" width="500" height="30" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_r_start" value="tryDescriptorRecovery()&#xa;lostFrameCount++"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;"
+          vertex="1" parent="1">
+          <mxGeometry x="900" y="120" width="240" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_r_thumb" value="makeThumbnail(現在フレーム)&#xa;64×48グレー → L2正規化"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="900" y="220" width="240" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_r_split" value="keyframes を分類&#xa;active (age ≤ 150f) / dormant"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="900" y="320" width="240" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_r_dormant_check" value="lostFrameCount % dormantCheckInterval == 0 ?"
+          style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;"
+          vertex="1" parent="1">
+          <mxGeometry x="885" y="420" width="270" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_r_wake" value="休眠KFをサムネイル類似度でソート&#xa;→ 上位2件を候補に追加"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d6b656;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="1230" y="427" width="250" height="56" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_r_extract_cur" value="現在フレームの特徴量を抽出 (1回のみ)&#xa;ALIKED(128次元) or XFeat(64次元)"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="900" y="540" width="280" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_r_for_each" value="候補KFを順番に試す (tryRecoverFromKeyframe)"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontStyle=1;"
+          vertex="1" parent="1">
+          <mxGeometry x="900" y="650" width="280" height="50" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_r_get_kf_feats" value="KF特徴量を取得 (遅延キャッシュ)&#xa;cachedALIKED / cachedXFeat を使用"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="900" y="750" width="280" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_r_nn" value="mutualNNRaw()&#xa;KF記述子 ↔ 現在記述子&#xa;BLAS GEMM → 相互最近傍 threshold=0.60"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="900" y="860" width="280" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_r_map2d" value="proximity → map2D → VisualMap[mapIdx].position&#xa;3D-2D 対応点を構築 (kfProximityPx=20px)"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="900" y="980" width="280" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_r_pnp" value="solvePnP RANSAC&#xa;成功 (inliers ≥ 8) → cameraPose 更新&#xa;phase = .tracking, lostFrameCount = 0"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="900" y="1080" width="280" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_r_fail" value="全候補で失敗&#xa;statusMessage 更新 / phase = .lost 継続"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="1250" y="1087" width="220" height="56" as="geometry"/>
+        </mxCell>
+
+        <!-- edges for recovery flow -->
+        <mxCell id="kf_e1" value="" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="kf_r_start" target="kf_r_thumb" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="kf_e2" value="" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="kf_r_thumb" target="kf_r_split" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="kf_e3" value="" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="kf_r_split" target="kf_r_dormant_check" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="kf_e4" value="Yes" style="edgeStyle=orthogonalEdgeStyle;fontSize=10;" edge="1" source="kf_r_dormant_check" target="kf_r_wake" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="kf_e5" value="No" style="edgeStyle=orthogonalEdgeStyle;fontSize=10;" edge="1" source="kf_r_dormant_check" target="kf_r_extract_cur" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="kf_e5b" value="" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="kf_r_wake" target="kf_r_extract_cur" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1355" y="570"/>
+              <mxPoint x="1180" y="570"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="kf_e6" value="" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="kf_r_extract_cur" target="kf_r_for_each" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="kf_e7" value="" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="kf_r_for_each" target="kf_r_get_kf_feats" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="kf_e8" value="" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="kf_r_get_kf_feats" target="kf_r_nn" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="kf_e9" value="" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="kf_r_nn" target="kf_r_map2d" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="kf_e10" value="" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="kf_r_map2d" target="kf_r_pnp" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="kf_e11" value="失敗 → 次のKFへ" style="edgeStyle=orthogonalEdgeStyle;fontSize=10;" edge="1" source="kf_r_pnp" target="kf_r_fail" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <!-- periodic correction note -->
+        <mxCell id="kf_correction_title" value="periodicCorrection (correctionInterval=60f)"
+          style="text;html=1;fontSize=13;fontStyle=1;"
+          vertex="1" parent="1">
+          <mxGeometry x="60" y="620" width="440" height="26" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kf_correction" value="最新KFを使用 (active/dormant問わず最後尾)&#xa;KF特徴量を遅延キャッシュ取得&#xa;mutualNNRaw (threshold=0.65) → map2D → PnP&#xa;成功時: cameraPose をサイレント補正"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;align=left;"
+          vertex="1" parent="1">
+          <mxGeometry x="60" y="648" width="440" height="80" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+</mxfile>
