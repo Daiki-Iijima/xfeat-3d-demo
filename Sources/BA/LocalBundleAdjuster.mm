@@ -163,9 +163,13 @@ BAResult runLocalBA(const simd_float4x4 *poses,
     ceres::Solver::Options opts;
     opts.linear_solver_type           = ceres::DENSE_SCHUR;
     opts.trust_region_strategy_type   = ceres::LEVENBERG_MARQUARDT;
-    opts.max_num_iterations           = 50;
+    opts.max_num_iterations           = 20;
     opts.num_threads                  = 2;
     opts.minimizer_progress_to_stdout = false;
+    opts.logging_type                 = ceres::SILENT;
+    opts.function_tolerance           = 1e-4;
+    opts.gradient_tolerance           = 1e-4;
+    opts.parameter_tolerance          = 1e-6;
 
     ceres::Solver::Summary summary;
     ceres::Solve(opts, &problem, &summary);
