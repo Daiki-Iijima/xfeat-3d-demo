@@ -3,6 +3,7 @@ import ARKit
 import UIKit
 import CoreImage
 import simd
+import AVFoundation
 
 /// ARKit session wrapper.
 ///
@@ -61,6 +62,26 @@ final class ARSessionManager: NSObject, ObservableObject {
         config.environmentTexturing = .none
         arSession.run(config, options: [.resetTracking, .removeExistingAnchors])
         isRunning = true
+        configureFocus()
+    }
+
+    /// Configure the camera for snappy continuous autofocus centered on the frame.
+    /// ARKit cooperates with AVCaptureDevice focus settings applied after session start.
+    private func configureFocus() {
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera,
+                                                   for: .video, position: .back) else { return }
+        do {
+            try device.lockForConfiguration()
+            if device.isFocusModeSupported(.continuousAutoFocus) {
+                device.focusMode = .continuousAutoFocus
+            }
+            if device.isFocusPointOfInterestSupported {
+                device.focusPointOfInterest = CGPoint(x: 0.5, y: 0.5)
+            }
+            device.unlockForConfiguration()
+        } catch {
+            // Non-fatal: ARKit will still use its default autofocus behaviour
+        }
     }
 
     func pause() {

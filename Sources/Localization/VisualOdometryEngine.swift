@@ -255,9 +255,19 @@ final class VisualOdometryEngine: ObservableObject {
         case .searching:
             tryMarkerInit(procImage: procImage, aliked: topPts, intrinsics: intrinsics, descDim: descDim)
         case .lost:
-            // After bootstrap: recover via descriptor matching (ArUco disabled)
-            // Before bootstrap: try ArUco again
             if bootstrapComplete {
+                // Fast path: try ArUco re-localization first (cheap, metric-accurate).
+                // The world frame IS the marker frame, so ArUco pose = direct cameraPose.
+                if let arucoPose = detectArUco(procImage: procImage, intrinsics: intrinsics) {
+                    cameraPose = arucoPose
+                    phase = .tracking
+                    lostFrameCount = 0
+                    lastMarkerFrame = frameIndex
+                    isMarkerInView  = true
+                    statusMessage = "ArUco再検出 — トラッキング再開"
+                    return
+                }
+                // Fallback: descriptor-based recovery against stored keyframes
                 await tryDescriptorRecovery(procImage: procImage, intrinsics: intrinsics)
             } else {
                 tryMarkerInit(procImage: procImage, aliked: topPts, intrinsics: intrinsics, descDim: descDim)
@@ -1304,14 +1314,12 @@ final class VisualOdometryEngine: ObservableObject {
 
     /// Detect ArUco 5×5 marker and return camera-to-world pose on success.
     ///
-    /// Returns `nil` immediately once bootstrap is complete — the marker is then
-    /// treated as a plain feature point tracked by PointTracker.
-    /// If `targetMarkerID >= 0`, only accepts the marker with that specific ID.
+    /// Available in all phases — used for both initial bootstrap and re-localization
+    /// when lost. If `targetMarkerID >= 0`, only accepts the marker with that specific ID.
     private func detectArUco(
         procImage: UIImage,
         intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float)
     ) -> simd_float4x4? {
-        guard !bootstrapComplete else { return nil }
 
         let (fx, fy, cx, cy) = intrinsics
         let aruco = OpenCVBridge.detectArUco5x5(
