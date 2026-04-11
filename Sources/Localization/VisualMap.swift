@@ -10,6 +10,10 @@ struct VisualMapEntry: Sendable {
     let descriptor: [Float]
 }
 
+// MARK: - Map culling state (parallel arrays, VisualMap-private)
+// observationCounts[i]: how many times entry i has been matched
+// lastSeenFrames[i]:    frame index of the most recent match
+
 /// Visual map for descriptor-based self-localization (PnP).
 ///
 /// Built while ARKit is running: triangulated 3D points and their ALIKED
@@ -19,18 +23,66 @@ struct VisualMapEntry: Sendable {
 final class VisualMap: @unchecked Sendable {
 
     private(set) var entries: [VisualMapEntry] = []
+    private var observationCounts: [Int] = []
+    private var lastSeenFrames:    [Int] = []
 
     var isEmpty: Bool { entries.isEmpty }
     var count:   Int  { entries.count }
 
     // MARK: - Building
 
-    func add(_ newEntries: [VisualMapEntry]) {
+    func add(_ newEntries: [VisualMapEntry], currentFrame: Int = 0) {
         entries.append(contentsOf: newEntries)
+        observationCounts.append(contentsOf: Array(repeating: 1, count: newEntries.count))
+        lastSeenFrames.append(contentsOf: Array(repeating: currentFrame, count: newEntries.count))
     }
 
     func clear() {
         entries = []
+        observationCounts = []
+        lastSeenFrames = []
+    }
+
+    // MARK: - Observation tracking
+
+    /// Call after each successful match to keep per-entry stats current.
+    func markObserved(indices: [Int], frame: Int) {
+        for i in indices {
+            guard i < entries.count else { continue }
+            observationCounts[i] += 1
+            lastSeenFrames[i] = frame
+        }
+    }
+
+    // MARK: - Culling
+
+    /// Remove stale map points.
+    ///
+    /// A point is removed when **both** conditions hold:
+    /// - Not seen for `maxUnseenFrames` frames (stale).
+    /// - Observed fewer than `minObservations` times total (unreliable).
+    ///
+    /// Points that have been matched often enough are treated as stable landmarks
+    /// and are kept even when temporarily out of view.
+    ///
+    /// - Returns: Number of points removed.
+    @discardableResult
+    func cull(currentFrame: Int,
+              maxUnseenFrames: Int = 120,
+              minObservations: Int = 3) -> Int {
+        var keep: [Int] = []
+        keep.reserveCapacity(entries.count)
+        for i in 0..<entries.count {
+            let stale    = (currentFrame - lastSeenFrames[i]) > maxUnseenFrames
+            let reliable = observationCounts[i] >= minObservations
+            if !stale || reliable { keep.append(i) }
+        }
+        let removed = entries.count - keep.count
+        guard removed > 0 else { return 0 }
+        entries           = keep.map { entries[$0] }
+        observationCounts = keep.map { observationCounts[$0] }
+        lastSeenFrames    = keep.map { lastSeenFrames[$0] }
+        return removed
     }
 
     // MARK: - Matching

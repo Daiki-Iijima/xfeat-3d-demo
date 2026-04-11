@@ -82,6 +82,8 @@ final class VisualOdometryEngine: ObservableObject {
     var minPnPInliers: Int = 8
     /// Frames between triangulation attempts in tracking mode.
     var triInterval: Int = 20
+    /// Frames between map culling passes. 0 = disabled.
+    var cullInterval: Int = 60
     /// Minimum parallax (px) needed for tracking-phase triangulation.
     var minTriParallax: Float = 8.0
     /// Minimum common ALIKED tracks needed for tracking-phase triangulation.
@@ -387,7 +389,7 @@ final class VisualOdometryEngine: ObservableObject {
             return
         }
 
-        visualMap.add(result.mapEntries)
+        visualMap.add(result.mapEntries, currentFrame: frameIndex)
         pointCloud.add(result.cloud3D)
         mapPointCount = visualMap.count
         lastTriangulatedIDs = Set(result.triangulatedIDs)
@@ -446,6 +448,8 @@ final class VisualOdometryEngine: ObservableObject {
         matchCount = matches.count
         // Record which tracked-point IDs are currently matched to the map
         lastMatchedIDs = Set(matches.map { aliked[$0.queryIdx].id })
+        // Update per-entry observation stats for culling
+        visualMap.markObserved(indices: matches.map { $0.entryIdx }, frame: frameIndex)
 
         guard matches.count >= 6 else {
             print("[VO] Track: match=\(matches.count)/6 aliked=\(n) map=\(visualMap.count) → lost")
@@ -551,6 +555,15 @@ final class VisualOdometryEngine: ObservableObject {
                 self.isGrowingMap = false
             }
         }
+
+        // Periodically cull stale map points.
+        if cullInterval > 0, frameIndex % cullInterval == 0 {
+            let removed = visualMap.cull(currentFrame: frameIndex)
+            if removed > 0 {
+                mapPointCount = visualMap.count
+                print("[VO] Culled \(removed) stale map points — remaining: \(mapPointCount)")
+            }
+        }
     }
 
     // MARK: - Map Growth
@@ -601,7 +614,7 @@ final class VisualOdometryEngine: ObservableObject {
         print("[VO] GrowMap: common=\(common.count) parallax=\(String(format:"%.1f",parallax))px tri=\(result.mapEntries.count)")
         guard !result.mapEntries.isEmpty else { return }
 
-        visualMap.add(result.mapEntries)
+        visualMap.add(result.mapEntries, currentFrame: frameIndex)
         pointCloud.add(result.cloud3D)
         mapPointCount = visualMap.count
         lastTriangulatedIDs = Set(result.triangulatedIDs)
