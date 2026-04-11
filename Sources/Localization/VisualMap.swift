@@ -119,8 +119,8 @@ final class VisualMap: @unchecked Sendable {
     /// - Returns: Number of points removed.
     @discardableResult
     func cull(currentFrame: Int,
-              maxUnseenFrames: Int = 120,
-              minObservations: Int = 3) -> Int {
+              maxUnseenFrames: Int = 150,
+              minObservations: Int = 4) -> Int {
         var keep: [Int] = []
         keep.reserveCapacity(entries.count)
         for i in 0..<entries.count {

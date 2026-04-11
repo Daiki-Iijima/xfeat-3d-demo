@@ -71,7 +71,8 @@ final class PnPLocalizer: ObservableObject {
             points2D: Data(bytes: pts2D, count: pts2D.count * 4),
             count:    matches.count,
             fx: intrinsics.fx, fy: intrinsics.fy,
-            cx: intrinsics.cx, cy: intrinsics.cy
+            cx: intrinsics.cx, cy: intrinsics.cy,
+            iterations: 100
         )
 
         guard result.success, result.inlierCount >= minInliers else {

@@ -139,7 +139,7 @@ BAResult runLocalBA(const simd_float4x4 *poses,
 
     // --- Build Ceres problem ---
     ceres::Problem problem;
-    ceres::LossFunction* loss = new ceres::HuberLoss(1.0);  // 1 px Huber
+    ceres::LossFunction* loss = new ceres::HuberLoss(1.5);  // 1.5 px Huber (pre-filtered obs, slightly relaxed)
 
     for (int k = 0; k < obsCount; k++) {
         const BAObservation& obs = observations[k];
@@ -160,16 +160,19 @@ BAResult runLocalBA(const simd_float4x4 *poses,
     }
 
     // --- Solve ---
+    // Adaptive iteration count: more observations → harder problem → more iterations
+    const int maxIter = (obsCount > 100) ? 30 : (obsCount < 20 ? 15 : 25);
+
     ceres::Solver::Options opts;
     opts.linear_solver_type           = ceres::DENSE_SCHUR;
     opts.trust_region_strategy_type   = ceres::LEVENBERG_MARQUARDT;
-    opts.max_num_iterations           = 20;
+    opts.max_num_iterations           = maxIter;
     opts.num_threads                  = 2;
     opts.minimizer_progress_to_stdout = false;
     opts.logging_type                 = ceres::SILENT;
-    opts.function_tolerance           = 1e-4;
-    opts.gradient_tolerance           = 1e-4;
-    opts.parameter_tolerance          = 1e-6;
+    opts.function_tolerance           = 1e-5;
+    opts.gradient_tolerance           = 1e-5;
+    opts.parameter_tolerance          = 1e-7;
 
     ceres::Solver::Summary summary;
     ceres::Solve(opts, &problem, &summary);

@@ -393,7 +393,8 @@
                    points2D:(NSData *)points2D
                       count:(NSInteger)count
                          fx:(float)fx fy:(float)fy
-                         cx:(float)cx cy:(float)cy {
+                         cx:(float)cx cy:(float)cy
+                 iterations:(NSInteger)iterations {
     PnPResult *fail = [[PnPResult alloc] init];
     fail.success = NO;
     fail.rotationMatrix    = [NSData data];
@@ -422,8 +423,8 @@
         obj, img, K, distCoeffs,
         rvec, tvec,
         false,           // useExtrinsicGuess
-        100,             // iterationsCount
-        4.0f,            // reprojectionError (pixels)
+        (int)iterations, // iterationsCount (caller-controlled: 60 tracking / 150 recovery)
+        2.5f,            // reprojectionError (pixels) — tightened from 4.0
         0.99,            // confidence
         inliersMat,
         cv::SOLVEPNP_ITERATIVE

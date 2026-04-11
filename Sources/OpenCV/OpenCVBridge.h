@@ -151,7 +151,8 @@ NS_ASSUME_NONNULL_BEGIN
                       count:(NSInteger)count
                          fx:(float)fx fy:(float)fy
                          cx:(float)cx cy:(float)cy
-    NS_SWIFT_NAME(solvePnP(points3D:points2D:count:fx:fy:cx:cy:));
+                 iterations:(NSInteger)iterations
+    NS_SWIFT_NAME(solvePnP(points3D:points2D:count:fx:fy:cx:cy:iterations:));
 
 @end
 

@@ -386,7 +386,7 @@ final class VisualOdometryEngine: ObservableObject {
         let tPose1Boot = bPose, tPose2Boot = currentPose
         let tPts1Boot = pts1, tPts2Boot = pts2, tCommonBoot = common
         let tIntrBoot = intrinsics, tImgBoot = procImage, tDimBoot = descDim
-        let maxErrBoot = maxReprojError, pwBoot = procW, phBoot = procH
+        let maxErrBoot: Float = 2.0, pwBoot = procW, phBoot = procH  // tighter threshold for bootstrap quality
         let result = await Task.detached(priority: .userInitiated) {
             Self.triangulate(
                 pose1: tPose1Boot, pose2: tPose2Boot,
@@ -458,7 +458,7 @@ final class VisualOdometryEngine: ObservableObject {
         let matches = await Task.detached(priority: .userInitiated) {
             VisualMap.computeMatches(
                 queryDescriptors: queryDescs, queryCount: n,
-                descDim: descDim, minScore: 0.70, entries: mapEntries
+                descDim: descDim, minScore: 0.76, entries: mapEntries
             )
         }.value
         matchCount = matches.count
@@ -495,7 +495,7 @@ final class VisualOdometryEngine: ObservableObject {
             var fPts3D = [Float](), fPts2D = [Float]()
             fPts3D.reserveCapacity(pts3D.count)
             fPts2D.reserveCapacity(pts2D.count)
-            let reprThreshSq: Float = 50 * 50   // 50 px tolerance
+            let reprThreshSq: Float = 10 * 10   // 10 px tolerance
             let n = pts3D.count / 3
             for i in 0..<n {
                 let pc = viewMat * SIMD4<Float>(pts3D[i*3], pts3D[i*3+1], pts3D[i*3+2], 1)
@@ -515,7 +515,8 @@ final class VisualOdometryEngine: ObservableObject {
             points3D: Data(bytes: pts3D, count: pts3D.count * 4),
             points2D: Data(bytes: pts2D, count: pts2D.count * 4),
             count: pnpCount,
-            fx: fx, fy: fy, cx: cx, cy: cy
+            fx: fx, fy: fy, cx: cx, cy: cy,
+            iterations: 60  // tracking: fewer iterations for real-time performance
         )
 
         guard pnp.success, pnp.inlierCount >= minPnPInliers else {
@@ -905,7 +906,7 @@ final class VisualOdometryEngine: ObservableObject {
         let kfKPsCopy = kfKPs, kfDescsCopy = kfDescs
         let curKPsCopy = curKPs, curDescsCopy = curDescs
         let map2DCopy = kf.map2D, idToPosCopy = visualMap.idToPositionSnapshot()
-        let dim = descDim, threshold: Float = 0.60
+        let dim = descDim, threshold: Float = 0.70
         let minInliers = minPnPInliers, proximity = kfProximityPx
         let (fx, fy, cx, cy) = intrinsics
 
@@ -934,7 +935,8 @@ final class VisualOdometryEngine: ObservableObject {
             let pnp = OpenCVBridge.solvePnP(
                 points3D: Data(bytes: pts3D, count: pts3D.count * 4),
                 points2D: Data(bytes: pts2D, count: pts2D.count * 4),
-                count: count, fx: fx, fy: fy, cx: cx, cy: cy
+                count: count, fx: fx, fy: fy, cx: cx, cy: cy,
+                iterations: 150  // recovery: more iterations for reliability
             )
             guard pnp.success, pnp.inlierCount >= minInliers else { return nil }
             return Self.buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector).inverse
@@ -1004,7 +1006,7 @@ final class VisualOdometryEngine: ObservableObject {
         let kfKPsCopy = kfKPs, kfDescsCopy = kfDescs
         let map2DCopy = kf.map2D, idToPosCopy = visualMap.idToPositionSnapshot()
         let dim = descDim, queryDescsCopy = queryDescs, mCount = M
-        let threshold: Float = 0.65
+        let threshold: Float = 0.72
         let minInliers = minPnPInliers, proximity = kfProximityPx
         let (fx, fy, cx, cy) = intrinsics
         let alikedCopy = aliked
@@ -1035,7 +1037,8 @@ final class VisualOdometryEngine: ObservableObject {
             let pnp = OpenCVBridge.solvePnP(
                 points3D: Data(bytes: pts3D, count: pts3D.count * 4),
                 points2D: Data(bytes: pts2D, count: pts2D.count * 4),
-                count: count, fx: fx, fy: fy, cx: cx, cy: cy
+                count: count, fx: fx, fy: fy, cx: cx, cy: cy,
+                iterations: 100  // correction: moderate iterations
             )
             guard pnp.success, pnp.inlierCount >= minInliers else { return nil }
             return Self.buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector).inverse
@@ -1217,7 +1220,7 @@ final class VisualOdometryEngine: ObservableObject {
             // Cheirality + depth range check in both cameras
             let c1 = V1 * SIMD4<Float>(wp, 1)
             let c2 = V2 * SIMD4<Float>(wp, 1)
-            guard c1.z > 0.01, c1.z < 30, c2.z > 0.01 else { continue }
+            guard c1.z > 0.05, c1.z < 50, c2.z > 0.05, c2.z < 50 else { continue }
 
             // Reprojection error in frame 1
             let u1 = (c1.x / c1.z) * fx + cx
@@ -1553,7 +1556,7 @@ final class VisualOdometryEngine: ObservableObject {
             let pairs = Self.mutualNNRaw(
                 desc1: kfDescsCopy, count1: kfKPsCopy.count,
                 desc2: curDescsCopy, count2: curKPsCopy.count,
-                descDim: dim, threshold: 0.65
+                descDim: dim, threshold: 0.70
             )
             guard pairs.count >= minInliers else { return nil }
 
@@ -1574,7 +1577,8 @@ final class VisualOdometryEngine: ObservableObject {
             let pnp = OpenCVBridge.solvePnP(
                 points3D: Data(bytes: pts3D, count: pts3D.count * 4),
                 points2D: Data(bytes: pts2D, count: pts2D.count * 4),
-                count: count, fx: fx, fy: fy, cx: cx, cy: cy
+                count: count, fx: fx, fy: fy, cx: cx, cy: cy,
+                iterations: 150  // loop closure: high iterations for reliability
             )
             guard pnp.success, pnp.inlierCount >= minInliers else { return nil }
             return Self.buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector).inverse
