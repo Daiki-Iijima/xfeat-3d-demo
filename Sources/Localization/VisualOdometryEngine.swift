@@ -94,6 +94,12 @@ final class VisualOdometryEngine: ObservableObject {
     var minTriCommon: Int = 10
     /// Maximum reprojection error (px) to accept a triangulated point.
     var maxReprojError: Float = 2.5
+    /// Minimum KF gap (in keyframe count, not frames) between current KF and loop candidate.
+    var loopClosureMinKFGap: Int = 5
+    /// Minimum thumbnail cosine similarity to attempt geometry verification.
+    var loopSimThreshold: Float = 0.82
+    /// Minimum PnP inliers required to confirm a loop (stricter than regular recovery).
+    var loopMinInliers: Int = 15
 
     let procW: Float = 960
     let procH: Float = 720
@@ -165,9 +171,10 @@ final class VisualOdometryEngine: ObservableObject {
     private var lastTriFrame: Int = -999
 
     /// Guard flags to prevent concurrent map-growth / correction / BA tasks from stacking up.
-    private var isGrowingMap: Bool = false
-    private var isCorrecting: Bool = false
-    private var isRunningBA:  Bool = false
+    private var isGrowingMap:    Bool = false
+    private var isCorrecting:    Bool = false
+    private var isRunningBA:     Bool = false
+    private var isDetectingLoop: Bool = false
     /// Incremented on every reset(). Fire-and-forget Tasks compare against this to
     /// detect that the engine was reset while they were awaiting background work,
     /// and bail out instead of writing stale data.
@@ -194,9 +201,10 @@ final class VisualOdometryEngine: ObservableObject {
         bootstrapComplete = false
         keyframes = []
         lostFrameCount = 0
-        isGrowingMap = false
-        isCorrecting = false
-        isRunningBA  = false
+        isGrowingMap    = false
+        isCorrecting    = false
+        isRunningBA     = false
+        isDetectingLoop = false
         sessionID += 1
         recoveryKeyframeImage = nil
         activeKeyframeCount = 0
@@ -533,6 +541,16 @@ final class VisualOdometryEngine: ObservableObject {
         // Periodically save a recovery keyframe (ALIKED/XFeat descriptors)
         if frameIndex - lastKeyframeFrame >= keyframeInterval, !matches.isEmpty {
             addKeyframe(from: matches, aliked: aliked, procImage: procImage, descDim: descDim)
+            // After KF is saved, check for loop closure against older keyframes.
+            if keyframes.count > loopClosureMinKFGap, !isDetectingLoop {
+                isDetectingLoop = true
+                let snapIntr = intrinsics, sid = sessionID
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.detectAndApplyLoopClosure(intrinsics: snapIntr, sessionID: sid)
+                    self.isDetectingLoop = false
+                }
+            }
         }
 
         // Periodic drift correction: fire-and-forget so processFrame returns immediately.
@@ -1424,6 +1442,168 @@ final class VisualOdometryEngine: ObservableObject {
         ) else { return SIMD3<Float>(0.5, 0.5, 0.5) }
         ctx.draw(cg, in: CGRect(x: -CGFloat(px), y: -CGFloat(py), width: iw, height: ih))
         return SIMD3<Float>(Float(pixel[0])/255, Float(pixel[1])/255, Float(pixel[2])/255)
+    }
+
+    // MARK: - Loop Closure
+
+    /// Scan older keyframes for a loop using thumbnail similarity, then verify geometrically.
+    /// On success, apply linear position drift correction over the affected KF range.
+    private func detectAndApplyLoopClosure(
+        intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float),
+        sessionID sid: Int
+    ) async {
+        let n = keyframes.count - 1
+        guard n > loopClosureMinKFGap else { return }
+
+        let currentKF = keyframes[n]
+        let searchEnd = n - loopClosureMinKFGap
+
+        // Step 1: Thumbnail scan — find the most similar older KF
+        var bestSim: Float = loopSimThreshold
+        var bestIdx = -1
+        for j in 0...searchEnd {
+            let s = thumbnailSimilarity(currentKF.thumbnail, keyframes[j].thumbnail)
+            if s > bestSim { bestSim = s; bestIdx = j }
+        }
+        guard bestIdx >= 0 else { return }
+
+        print("[LC] Candidate KF[\(n)]↔KF[\(bestIdx)] sim=\(String(format:"%.3f", bestSim))")
+
+        // Step 2: Extract features from the current KF image
+        let descDim = currentKF.descDim
+        let kfImage = currentKF.image
+        let curFeatures: (kps: [SIMD2<Float>], descs: [Float])? = await Task.detached(priority: .utility) {
+            if descDim == 128 {
+                guard let f = ALIKEDMatcher.shared.extractFeatures(from: kfImage), f.count > 0 else { return nil }
+                return (f.keypoints, f.descriptors)
+            } else {
+                guard let f = XFeatMatcher.shared.extractFeatures(from: kfImage), f.count > 0 else { return nil }
+                return (f.keypoints, f.descriptors)
+            }
+        }.value
+        guard let (curKPs, curDescs) = curFeatures else { return }
+        guard sid == sessionID else { return }
+
+        // Step 3: Geometry verification — match loopKF features against currentKF features
+        let loopPose = await verifyLoop(
+            loopKFIdx: bestIdx,
+            curKPs: curKPs, curDescs: curDescs,
+            intrinsics: intrinsics
+        )
+        guard let loopPose else {
+            print("[LC] Geometry verification failed KF[\(n)]↔KF[\(bestIdx)]")
+            return
+        }
+        guard sid == sessionID else { return }
+
+        print("[LC] Loop confirmed! Applying drift correction KF[\(bestIdx)]→KF[\(n)]")
+
+        // Step 4: Apply linear position drift correction
+        applyLoopDrift(currentKFIdx: n, loopKFIdx: bestIdx, correctedPose: loopPose)
+    }
+
+    /// Verify loop geometry: match loop KF's stored features against curKPs/curDescs, solve PnP.
+    private func verifyLoop(
+        loopKFIdx j: Int,
+        curKPs: [SIMD2<Float>], curDescs: [Float],
+        intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float)
+    ) async -> simd_float4x4? {
+        guard j < keyframes.count else { return nil }
+        var kf = keyframes[j]
+        let descDim = kf.descDim
+
+        // Get (or lazily extract and cache) loop KF features
+        let kfKPs: [SIMD2<Float>]
+        let kfDescs: [Float]
+        if descDim == 128 {
+            if let cached = kf.cachedALIKED {
+                kfKPs = cached.keypoints; kfDescs = cached.descriptors
+            } else {
+                let img = kf.image
+                let f = await Task.detached(priority: .utility) {
+                    ALIKEDMatcher.shared.extractFeatures(from: img)
+                }.value
+                guard let f, f.count > 0 else { return nil }
+                guard j < keyframes.count else { return nil }
+                kf.cachedALIKED = f; keyframes[j] = kf
+                kfKPs = f.keypoints; kfDescs = f.descriptors
+            }
+        } else {
+            if let cached = kf.cachedXFeat {
+                kfKPs = cached.keypoints; kfDescs = cached.descriptors
+            } else {
+                let img = kf.image
+                let f = await Task.detached(priority: .utility) {
+                    XFeatMatcher.shared.extractFeatures(from: img)
+                }.value
+                guard let f, f.count > 0 else { return nil }
+                guard j < keyframes.count else { return nil }
+                kf.cachedXFeat = f; keyframes[j] = kf
+                kfKPs = f.keypoints; kfDescs = f.descriptors
+            }
+        }
+
+        let kfKPsCopy = kfKPs, kfDescsCopy = kfDescs
+        let curKPsCopy = curKPs, curDescsCopy = curDescs
+        let map2DCopy = kf.map2D, idToPosCopy = visualMap.idToPositionSnapshot()
+        let dim = descDim, proximity = kfProximityPx, minInliers = loopMinInliers
+        let (fx, fy, cx, cy) = intrinsics
+
+        return await Task.detached(priority: .utility) {
+            let pairs = Self.mutualNNRaw(
+                desc1: kfDescsCopy, count1: kfKPsCopy.count,
+                desc2: curDescsCopy, count2: curKPsCopy.count,
+                descDim: dim, threshold: 0.65
+            )
+            guard pairs.count >= minInliers else { return nil }
+
+            var pts3D = [Float](), pts2D = [Float]()
+            for (kfPtIdx, curPtIdx) in pairs {
+                let kfKP = kfKPsCopy[kfPtIdx]
+                guard let best = map2DCopy.min(by: {
+                    simd_length($0.pos2D - kfKP) < simd_length($1.pos2D - kfKP)
+                }), simd_length(best.pos2D - kfKP) < proximity,
+                let pos3D = idToPosCopy[best.mapID] else { continue }
+                let curKP = curKPsCopy[curPtIdx]
+                pts3D.append(pos3D.x); pts3D.append(pos3D.y); pts3D.append(pos3D.z)
+                pts2D.append(curKP.x); pts2D.append(curKP.y)
+            }
+            let count = pts3D.count / 3
+            guard count >= minInliers else { return nil }
+
+            let pnp = OpenCVBridge.solvePnP(
+                points3D: Data(bytes: pts3D, count: pts3D.count * 4),
+                points2D: Data(bytes: pts2D, count: pts2D.count * 4),
+                count: count, fx: fx, fy: fy, cx: cx, cy: cy
+            )
+            guard pnp.success, pnp.inlierCount >= minInliers else { return nil }
+            return Self.buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector).inverse
+        }.value
+    }
+
+    /// Apply linear position drift correction to keyframes in range (loopKFIdx, currentKFIdx].
+    /// The loop KF itself is kept fixed; each subsequent KF receives a linearly weighted
+    /// share of the total positional drift.
+    private func applyLoopDrift(
+        currentKFIdx n: Int,
+        loopKFIdx j: Int,
+        correctedPose: simd_float4x4
+    ) {
+        guard n > j, n < keyframes.count else { return }
+        let driftT = SIMD3<Float>(
+            correctedPose.columns.3.x - keyframes[n].pose.columns.3.x,
+            correctedPose.columns.3.y - keyframes[n].pose.columns.3.y,
+            correctedPose.columns.3.z - keyframes[n].pose.columns.3.z
+        )
+        let total = Float(n - j)
+        for k in (j + 1)...n {
+            let w = Float(k - j) / total
+            keyframes[k].pose.columns.3.x += driftT.x * w
+            keyframes[k].pose.columns.3.y += driftT.y * w
+            keyframes[k].pose.columns.3.z += driftT.z * w
+        }
+        cameraPose = keyframes[n].pose
+        print("[LC] Drift Δt=(\(String(format:"%.3f",driftT.x)),\(String(format:"%.3f",driftT.y)),\(String(format:"%.3f",driftT.z))) KF[\(j)]→KF[\(n)]")
     }
 }
 
