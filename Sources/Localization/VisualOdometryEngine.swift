@@ -84,6 +84,10 @@ final class VisualOdometryEngine: ObservableObject {
     var triInterval: Int = 20
     /// Frames between map culling passes. 0 = disabled.
     var cullInterval: Int = 60
+    /// Frames between Local Bundle Adjustment runs. 0 = disabled.
+    var baInterval: Int = 30
+    /// Number of recent keyframes to include in the BA window.
+    var baWindowSize: Int = 7
     /// Minimum parallax (px) needed for tracking-phase triangulation.
     var minTriParallax: Float = 8.0
     /// Minimum common ALIKED tracks needed for tracking-phase triangulation.
@@ -106,10 +110,12 @@ final class VisualOdometryEngine: ObservableObject {
     /// One entry in the multi-keyframe database.
     private struct StoredKeyframe {
         let image: UIImage
+        /// Camera-to-world pose at the time this keyframe was saved.
+        var pose: simd_float4x4
         /// L2-normalised 64×48 grayscale vector — used for fast dormant-KF similarity gating.
         let thumbnail: [Float]
-        /// Visual map entry index → 2D pixel position in the keyframe image.
-        let map2D: [(mapIdx: Int, pos2D: SIMD2<Float>)]
+        /// Visual map stable ID → 2D pixel position in the keyframe image.
+        let map2D: [(mapID: Int, pos2D: SIMD2<Float>)]
         let descDim: Int
         /// Frame index at which this keyframe was saved.
         let savedAtFrame: Int
@@ -158,9 +164,10 @@ final class VisualOdometryEngine: ObservableObject {
     private var frameIndex: Int = 0
     private var lastTriFrame: Int = -999
 
-    /// Guard flags to prevent concurrent map-growth / correction tasks from stacking up.
+    /// Guard flags to prevent concurrent map-growth / correction / BA tasks from stacking up.
     private var isGrowingMap: Bool = false
     private var isCorrecting: Bool = false
+    private var isRunningBA:  Bool = false
     /// Incremented on every reset(). Fire-and-forget Tasks compare against this to
     /// detect that the engine was reset while they were awaiting background work,
     /// and bail out instead of writing stale data.
@@ -189,6 +196,7 @@ final class VisualOdometryEngine: ObservableObject {
         lostFrameCount = 0
         isGrowingMap = false
         isCorrecting = false
+        isRunningBA  = false
         sessionID += 1
         recoveryKeyframeImage = nil
         activeKeyframeCount = 0
@@ -556,8 +564,21 @@ final class VisualOdometryEngine: ObservableObject {
             }
         }
 
-        // Periodically cull stale map points.
-        if cullInterval > 0, frameIndex % cullInterval == 0 {
+        // Periodically run Local Bundle Adjustment.
+        if baInterval > 0, frameIndex % baInterval == 0, !isRunningBA,
+           keyframes.count >= 2 {
+            isRunningBA = true
+            let sid = sessionID
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.localBAStep(intrinsics: intrinsics, sessionID: sid)
+                self.isRunningBA = false
+            }
+        }
+
+        // Periodically cull stale map points (skip the frame BA just fired to avoid index race).
+        if cullInterval > 0, frameIndex % cullInterval == 0,
+           !(baInterval > 0 && frameIndex % baInterval == 0) {
             let removed = visualMap.cull(currentFrame: frameIndex)
             if removed > 0 {
                 mapPointCount = visualMap.count
@@ -623,6 +644,121 @@ final class VisualOdometryEngine: ObservableObject {
         triRefPose = currentPose
         triRefPositions = Dictionary(uniqueKeysWithValues: aliked.map { ($0.id, $0.position) })
         lastTriFrame = frameIndex
+    }
+
+    // MARK: - Local Bundle Adjustment
+
+    /// Runs a sparse Local Bundle Adjustment over the most recent BA window of keyframes.
+    ///
+    /// - Collects unique 3-D landmarks observed across the window keyframes.
+    /// - Builds 2-D observations for each (keyframe, landmark) pair.
+    /// - Calls the Ceres-based `runLocalBA` C++ function.
+    /// - Writes refined landmark positions back into `visualMap`.
+    /// - Updates stored keyframe poses and the live `cameraPose`.
+    private func localBAStep(
+        intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float),
+        sessionID sid: Int
+    ) async {
+        guard keyframes.count >= 2 else { return }
+
+        // Window: last baWindowSize keyframes (or all if fewer).
+        let window = Array(keyframes.suffix(baWindowSize))
+        guard window.count >= 2 else { return }
+
+        // --- Collect unique map IDs referenced in the window ---
+        var mapIDSet = Set<Int>()
+        for kf in window {
+            for obs in kf.map2D { mapIDSet.insert(obs.mapID) }
+        }
+
+        // Look up current 3-D positions for each map ID
+        let idToPosCurrent = visualMap.idToPositionSnapshot()
+        let validIDs = mapIDSet.filter { idToPosCurrent[$0] != nil }
+        guard validIDs.count >= 4 else { return }
+
+        // Build stable index mapping: mapID → BA point index
+        let sortedIDs = Array(validIDs)
+        var mapIDToBAIdx = [Int: Int]()
+        for (i, id) in sortedIDs.enumerated() { mapIDToBAIdx[id] = i }
+
+        // --- Pack poses (camera-to-world) ---
+        var posesC = window.map { $0.pose }
+        let nPoses  = posesC.count
+        let nPoints = sortedIDs.count
+
+        // --- Pack 3-D points ---
+        var pointsC = sortedIDs.map { id -> simd_float3 in
+            idToPosCurrent[id] ?? .zero
+        }
+
+        // --- Build observations ---
+        var obsArray = [BAObservation]()
+        for (poseIdx, kf) in window.enumerated() {
+            for obs in kf.map2D {
+                guard let ptIdx = mapIDToBAIdx[obs.mapID] else { continue }
+                obsArray.append(BAObservation(
+                    poseIdx:  Int32(poseIdx),
+                    pointIdx: Int32(ptIdx),
+                    u: obs.pos2D.x,
+                    v: obs.pos2D.y
+                ))
+            }
+        }
+        guard obsArray.count >= 8 else { return }
+
+        // Run Ceres BA on a background thread
+        let (fx, fy, cx, cy) = intrinsics
+        let baResult: BAResult = await Task.detached(priority: .userInitiated) {
+            posesC.withUnsafeBufferPointer { posPtr in
+                pointsC.withUnsafeBufferPointer { ptPtr in
+                    obsArray.withUnsafeBufferPointer { obsPtr in
+                        runLocalBA(
+                            posPtr.baseAddress, Int32(nPoses),
+                            ptPtr.baseAddress,  Int32(nPoints),
+                            obsPtr.baseAddress, Int32(obsArray.count),
+                            fx, fy, cx, cy,
+                            true  // fix first pose (gauge freedom)
+                        )
+                    }
+                }
+            }
+        }.value
+
+        // Bail out if reset() was called while we were computing
+        guard sid == sessionID else {
+            free(baResult.poses); free(baResult.points)
+            return
+        }
+
+        guard baResult.converged else {
+            print("[BA] Did not converge (cost=\(String(format:"%.4f", baResult.finalCost)))")
+            free(baResult.poses); free(baResult.points)
+            return
+        }
+
+        // --- Write refined 3-D positions back into the map ---
+        for i in 0..<Int(baResult.pointCount) {
+            let mapID = sortedIDs[i]
+            visualMap.updatePosition(id: mapID, newPosition: baResult.points[i])
+        }
+
+        // --- Update keyframe poses in the window (last baWindowSize entries) ---
+        let windowStart = keyframes.count - window.count
+        for i in 0..<Int(baResult.poseCount) {
+            let kfIdx = windowStart + i
+            guard kfIdx < keyframes.count else { break }
+            keyframes[kfIdx].pose = baResult.poses[i]
+        }
+
+        // --- Update live camera pose from the last refined window pose ---
+        if baResult.poseCount > 0 {
+            cameraPose = baResult.poses[Int(baResult.poseCount) - 1]
+        }
+
+        free(baResult.poses)
+        free(baResult.points)
+
+        print("[BA] Converged: cost=\(String(format:"%.4f", baResult.finalCost)) pts=\(nPoints) obs=\(obsArray.count)")
     }
 
     // MARK: - Descriptor Recovery (multi-keyframe, ALIKED / XFeat)
@@ -750,7 +886,7 @@ final class VisualOdometryEngine: ObservableObject {
 
         let kfKPsCopy = kfKPs, kfDescsCopy = kfDescs
         let curKPsCopy = curKPs, curDescsCopy = curDescs
-        let map2DCopy = kf.map2D, entriesCopy = visualMap.entries
+        let map2DCopy = kf.map2D, idToPosCopy = visualMap.idToPositionSnapshot()
         let dim = descDim, threshold: Float = 0.60
         let minInliers = minPnPInliers, proximity = kfProximityPx
         let (fx, fy, cx, cy) = intrinsics
@@ -769,8 +905,7 @@ final class VisualOdometryEngine: ObservableObject {
                 guard let best = map2DCopy.min(by: {
                     simd_length($0.pos2D - kfKP) < simd_length($1.pos2D - kfKP)
                 }), simd_length(best.pos2D - kfKP) < proximity,
-                best.mapIdx < entriesCopy.count else { continue }
-                let pos3D = entriesCopy[best.mapIdx].position
+                let pos3D = idToPosCopy[best.mapID] else { continue }
                 let curKP = curKPsCopy[curPtIdx]
                 pts3D.append(pos3D.x); pts3D.append(pos3D.y); pts3D.append(pos3D.z)
                 pts2D.append(curKP.x); pts2D.append(curKP.y)
@@ -849,7 +984,7 @@ final class VisualOdometryEngine: ObservableObject {
         }
 
         let kfKPsCopy = kfKPs, kfDescsCopy = kfDescs
-        let map2DCopy = kf.map2D, entriesCopy = visualMap.entries
+        let map2DCopy = kf.map2D, idToPosCopy = visualMap.idToPositionSnapshot()
         let dim = descDim, queryDescsCopy = queryDescs, mCount = M
         let threshold: Float = 0.65
         let minInliers = minPnPInliers, proximity = kfProximityPx
@@ -871,8 +1006,7 @@ final class VisualOdometryEngine: ObservableObject {
                 guard let best = map2DCopy.min(by: {
                     simd_length($0.pos2D - kfKP) < simd_length($1.pos2D - kfKP)
                 }), simd_length(best.pos2D - kfKP) < proximity,
-                best.mapIdx < entriesCopy.count else { continue }
-                let pos3D = entriesCopy[best.mapIdx].position
+                let pos3D = idToPosCopy[best.mapID] else { continue }
                 let pt = alikedCopy[queryIdx]
                 pts3D.append(pos3D.x); pts3D.append(pos3D.y); pts3D.append(pos3D.z)
                 pts2D.append(pt.position.x); pts2D.append(pt.position.y)
@@ -907,14 +1041,15 @@ final class VisualOdometryEngine: ObservableObject {
         procImage: UIImage,
         descDim: Int
     ) {
-        let map2D = matches.compactMap { m -> (mapIdx: Int, pos2D: SIMD2<Float>)? in
-            guard m.queryIdx < aliked.count else { return nil }
-            return (mapIdx: m.entryIdx, pos2D: aliked[m.queryIdx].position)
+        let map2D = matches.compactMap { m -> (mapID: Int, pos2D: SIMD2<Float>)? in
+            guard m.queryIdx < aliked.count, m.entryIdx < visualMap.count else { return nil }
+            return (mapID: visualMap.id(at: m.entryIdx), pos2D: aliked[m.queryIdx].position)
         }
-        guard !map2D.isEmpty else { return }
+        guard !map2D.isEmpty, let pose = cameraPose else { return }
 
         let kf = StoredKeyframe(
             image: procImage,
+            pose: pose,
             thumbnail: makeThumbnail(from: procImage),
             map2D: map2D,
             descDim: descDim,

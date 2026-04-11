@@ -27,12 +27,19 @@ targets:
       SWIFT_VERSION: "5.9"
       SWIFT_OBJC_BRIDGING_HEADER: Sources/OpenCV/XFeat3D-Bridging-Header.h
       CLANG_ENABLE_MODULES: YES
+      HEADER_SEARCH_PATHS:
+        - $(SRCROOT)/Sources/Ceres
+        - $(SRCROOT)/Sources/Ceres/Ceres.xcframework/ios-arm64/Headers
+        - $(SRCROOT)/Sources/Ceres/Ceres.xcframework/ios-arm64/Headers/ceres/internal/miniglog
+      OTHER_CPLUSPLUSFLAGS: "-std=c++17"
     dependencies:
       - sdk: Accelerate.framework
       - sdk: CoreMotion.framework
       - sdk: SceneKit.framework
       - framework: Sources/OpenCV/opencv2.xcframework
         embed: true
+      - framework: Sources/Ceres/Ceres.xcframework
+        embed: false
     info:
       path: Resources/Info.plist
       properties:

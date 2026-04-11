@@ -26,21 +26,72 @@ final class VisualMap: @unchecked Sendable {
     private var observationCounts: [Int] = []
     private var lastSeenFrames:    [Int] = []
 
+    // Stable-ID tracking — survives culling so keyframe references stay valid.
+    private var entryIDs: [Int] = []          // stable ID for entries[i]
+    private var nextID:   Int   = 0
+    /// Stable-ID → current array index. Rebuilt after every cull().
+    private(set) var idToIndex: [Int: Int] = [:]
+
     var isEmpty: Bool { entries.isEmpty }
     var count:   Int  { entries.count }
 
     // MARK: - Building
 
     func add(_ newEntries: [VisualMapEntry], currentFrame: Int = 0) {
+        let startIdx = entries.count
         entries.append(contentsOf: newEntries)
         observationCounts.append(contentsOf: Array(repeating: 1, count: newEntries.count))
         lastSeenFrames.append(contentsOf: Array(repeating: currentFrame, count: newEntries.count))
+        for i in 0..<newEntries.count {
+            let id = nextID
+            nextID += 1
+            entryIDs.append(id)
+            idToIndex[id] = startIdx + i
+        }
     }
 
     func clear() {
         entries = []
         observationCounts = []
-        lastSeenFrames = []
+        lastSeenFrames    = []
+        entryIDs          = []
+        idToIndex         = [:]
+    }
+
+    // MARK: - Stable-ID accessors
+
+    /// Returns the stable ID for the entry at the given array index.
+    func id(at index: Int) -> Int {
+        entryIDs[index]
+    }
+
+    /// Returns the current array index for a stable ID, or nil if culled.
+    func index(forID id: Int) -> Int? {
+        idToIndex[id]
+    }
+
+    /// Returns the entry for a stable ID, or nil if culled.
+    func entry(forID id: Int) -> VisualMapEntry? {
+        guard let idx = idToIndex[id] else { return nil }
+        return entries[idx]
+    }
+
+    /// Update the 3D position of an entry by stable ID (used after Bundle Adjustment).
+    func updatePosition(id: Int, newPosition: SIMD3<Float>) {
+        guard let idx = idToIndex[id] else { return }
+        let old = entries[idx]
+        entries[idx] = VisualMapEntry(position: newPosition, descriptor: old.descriptor)
+    }
+
+    /// Returns a stable-ID → 3D position dictionary suitable for use in background tasks.
+    /// The snapshot is value-copied, so it remains valid even if the map is later mutated.
+    func idToPositionSnapshot() -> [Int: SIMD3<Float>] {
+        var dict = [Int: SIMD3<Float>]()
+        dict.reserveCapacity(entries.count)
+        for (id, idx) in idToIndex {
+            dict[id] = entries[idx].position
+        }
+        return dict
     }
 
     // MARK: - Observation tracking
@@ -82,6 +133,12 @@ final class VisualMap: @unchecked Sendable {
         entries           = keep.map { entries[$0] }
         observationCounts = keep.map { observationCounts[$0] }
         lastSeenFrames    = keep.map { lastSeenFrames[$0] }
+        entryIDs          = keep.map { entryIDs[$0] }
+        // Rebuild the ID→index lookup after reordering
+        idToIndex = [:]
+        for (newIdx, id) in entryIDs.enumerated() {
+            idToIndex[id] = newIdx
+        }
         return removed
     }
 
