@@ -49,6 +49,21 @@ final class VisualMap: @unchecked Sendable {
         descDim: Int,
         minScore: Float = 0.72
     ) -> [(entryIdx: Int, queryIdx: Int)] {
+        VisualMap.computeMatches(
+            queryDescriptors: queryDescriptors, queryCount: queryCount,
+            descDim: descDim, minScore: minScore, entries: entries)
+    }
+
+    /// Nonisolated static version for background execution.
+    /// Identical logic to `findMatches` but takes `entries` as a value-type parameter
+    /// so the caller can snapshot `self.entries` and dispatch to `Task.detached`.
+    nonisolated static func computeMatches(
+        queryDescriptors: [Float],
+        queryCount: Int,
+        descDim: Int,
+        minScore: Float = 0.72,
+        entries: [VisualMapEntry]
+    ) -> [(entryIdx: Int, queryIdx: Int)] {
         guard !entries.isEmpty, queryCount > 0, descDim > 0 else { return [] }
 
         let mapCount = entries.count

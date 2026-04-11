@@ -33,6 +33,7 @@ struct VOModeView: View {
         (fx: 800, fy: 800, cx: 480, cy: 360)
     @State private var showPointCloud = false
     @State private var showSettings = false
+    @State private var isProcessingVO = false
     /// Full-screen size measured by an ignoresSafeArea GeometryReader.
     /// Overlays use this so they match the camera feed's extent exactly.
     @State private var fullScreenSize: CGSize = UIScreen.main.bounds.size
@@ -156,13 +157,20 @@ struct VOModeView: View {
         }
         .sheet(isPresented: $showSettings) { settingsSheet }
         .onAppear { applySettings() }
-        .onReceive(arManager.$procImage.compactMap { $0 }) { frame in
+        .onReceive(arManager.$procImage.compactMap { $0 }) { image in
+            guard !isProcessingVO else { return }
             guard let arFrame = arManager.latestFrame else { return }
-            let tracked = PointTracker.shared.update(frame: frame)
-            trackedPoints = tracked
+            isProcessingVO = true
             let intr = arManager.scaledIntrinsics(for: arFrame)
-            currentIntrinsics = intr
-            voEngine.processFrame(procImage: frame, trackedPoints: tracked, intrinsics: intr)
+            Task {
+                let tracked = await Task.detached(priority: .userInitiated) {
+                    PointTracker.shared.update(frame: image)
+                }.value
+                trackedPoints = tracked
+                currentIntrinsics = intr
+                await voEngine.processFrame(procImage: image, trackedPoints: tracked, intrinsics: intr)
+                isProcessingVO = false
+            }
         }
         .onDisappear { voEngine.reset() }
     }

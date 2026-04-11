@@ -156,6 +156,14 @@ final class VisualOdometryEngine: ObservableObject {
     private var frameIndex: Int = 0
     private var lastTriFrame: Int = -999
 
+    /// Guard flags to prevent concurrent map-growth / correction tasks from stacking up.
+    private var isGrowingMap: Bool = false
+    private var isCorrecting: Bool = false
+    /// Incremented on every reset(). Fire-and-forget Tasks compare against this to
+    /// detect that the engine was reset while they were awaiting background work,
+    /// and bail out instead of writing stale data.
+    private var sessionID: Int = 0
+
     // MARK: - Public API
 
     func reset() {
@@ -177,6 +185,9 @@ final class VisualOdometryEngine: ObservableObject {
         bootstrapComplete = false
         keyframes = []
         lostFrameCount = 0
+        isGrowingMap = false
+        isCorrecting = false
+        sessionID += 1
         recoveryKeyframeImage = nil
         activeKeyframeCount = 0
         dormantKeyframeCount = 0
@@ -198,7 +209,7 @@ final class VisualOdometryEngine: ObservableObject {
         procImage: UIImage,
         trackedPoints: [TrackedPoint],
         intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float)
-    ) {
+    ) async {
         frameIndex += 1
 
         // Pick the highest tier that has descriptors (ALIKED 128-dim → XFeat 64-dim → none)
@@ -229,14 +240,14 @@ final class VisualOdometryEngine: ObservableObject {
             // After bootstrap: recover via descriptor matching (ArUco disabled)
             // Before bootstrap: try ArUco again
             if bootstrapComplete {
-                tryDescriptorRecovery(procImage: procImage, intrinsics: intrinsics)
+                await tryDescriptorRecovery(procImage: procImage, intrinsics: intrinsics)
             } else {
                 tryMarkerInit(procImage: procImage, aliked: topPts, intrinsics: intrinsics, descDim: descDim)
             }
         case .bootstrapping:
-            tryBootstrap(aliked: topPts, intrinsics: intrinsics, procImage: procImage, descDim: descDim)
+            await tryBootstrap(aliked: topPts, intrinsics: intrinsics, procImage: procImage, descDim: descDim)
         case .tracking:
-            trackingStep(aliked: topPts, intrinsics: intrinsics, procImage: procImage, descDim: descDim)
+            await trackingStep(aliked: topPts, intrinsics: intrinsics, procImage: procImage, descDim: descDim)
         }
     }
 
@@ -301,7 +312,7 @@ final class VisualOdometryEngine: ObservableObject {
         intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float),
         procImage: UIImage,
         descDim: Int
-    ) {
+    ) async {
         guard let bPose = bootstrapPose else { phase = .searching; return }
 
         let bootN = bootstrapPositions2D.count
@@ -315,7 +326,14 @@ final class VisualOdometryEngine: ObservableObject {
         }
 
         // Descriptor-based matching (ID-independent — works after PointTracker re-detects)
-        let (pts1, pts2, common) = matchBootstrapDescriptors(current: aliked, descDim: descDim)
+        let bootDescs = bootstrapDescriptors, bootPos = bootstrapPositions2D
+        let curAliked = aliked, curDescDim = descDim
+        let (pts1, pts2, common) = await Task.detached(priority: .userInitiated) {
+            Self.matchBootstrapDescriptors(
+                current: curAliked, descDim: curDescDim,
+                bootstrapDescriptors: bootDescs, bootstrapPositions2D: bootPos
+            )
+        }.value
 
         print("[VO] Bootstrap: boot=\(bootN) cur=\(curN) matched=\(common.count) need=\(minBootstrapCommon)")
 
@@ -324,7 +342,7 @@ final class VisualOdometryEngine: ObservableObject {
             return
         }
 
-        let parallax = averageDisplacement(pts1: pts1, pts2: pts2, count: common.count)
+        let parallax = Self.averageDisplacement(pts1: pts1, pts2: pts2, count: common.count)
         guard parallax >= minBootstrapParallax else {
             statusMessage = String(format: "視差: %.1fpx / 必要: %.0fpx — もう少し動かしてください",
                                    parallax, minBootstrapParallax)
@@ -347,15 +365,22 @@ final class VisualOdometryEngine: ObservableObject {
         }
 
         // Triangulate initial map points
-        let result = triangulate(
-            pose1: bPose, pose2: currentPose,
-            pts1: pts1, pts2: pts2,
-            aliked: common,
-            intrinsics: intrinsics,
-            procImage: procImage,
-            confidence: 0.5,
-            descDim: descDim
-        )
+        let tPose1Boot = bPose, tPose2Boot = currentPose
+        let tPts1Boot = pts1, tPts2Boot = pts2, tCommonBoot = common
+        let tIntrBoot = intrinsics, tImgBoot = procImage, tDimBoot = descDim
+        let maxErrBoot = maxReprojError, pwBoot = procW, phBoot = procH
+        let result = await Task.detached(priority: .userInitiated) {
+            Self.triangulate(
+                pose1: tPose1Boot, pose2: tPose2Boot,
+                pts1: tPts1Boot, pts2: tPts2Boot,
+                aliked: tCommonBoot,
+                intrinsics: tIntrBoot,
+                procImage: tImgBoot,
+                confidence: 0.5,
+                descDim: tDimBoot,
+                maxReprojError: maxErrBoot, procW: pwBoot, procH: phBoot
+            )
+        }.value
 
         guard result.mapEntries.count >= 8 else {
             statusMessage = "三角測量点が少なすぎます (\(result.mapEntries.count)) — もっと移動してください"
@@ -393,7 +418,7 @@ final class VisualOdometryEngine: ObservableObject {
         intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float),
         procImage: UIImage,
         descDim: Int
-    ) {
+    ) async {
         guard !visualMap.isEmpty else { phase = .bootstrapping; return }
 
         // Update marker visibility (fades out after ~10 frames without detection)
@@ -410,12 +435,14 @@ final class VisualOdometryEngine: ObservableObject {
             for j in 0..<descDim { queryDescs[base + j] = pt.descriptor[j] }
         }
 
-        let matches = visualMap.findMatches(
-            queryDescriptors: queryDescs,
-            queryCount: n,
-            descDim: descDim,
-            minScore: 0.70
-        )
+        // Background: expensive cblas_sgemm matrix multiply
+        let mapEntries = visualMap.entries
+        let matches = await Task.detached(priority: .userInitiated) {
+            VisualMap.computeMatches(
+                queryDescriptors: queryDescs, queryCount: n,
+                descDim: descDim, minScore: 0.70, entries: mapEntries
+            )
+        }.value
         matchCount = matches.count
         // Record which tracked-point IDs are currently matched to the map
         lastMatchedIDs = Set(matches.map { aliked[$0.queryIdx].id })
@@ -440,10 +467,34 @@ final class VisualOdometryEngine: ObservableObject {
             pts2D.append(pt.position.x); pts2D.append(pt.position.y)
         }
 
+        // Pre-filter by reprojection using the current pose estimate.
+        // Removes map points whose 3D positions are inconsistent with the observed 2D position,
+        // preventing noisy/stale triangulation from making PnP degenerate (success=false, inliers=0).
+        if let pose = cameraPose {
+            let viewMat = pose.inverse
+            var fPts3D = [Float](), fPts2D = [Float]()
+            fPts3D.reserveCapacity(pts3D.count)
+            fPts2D.reserveCapacity(pts2D.count)
+            let reprThreshSq: Float = 50 * 50   // 50 px tolerance
+            let n = pts3D.count / 3
+            for i in 0..<n {
+                let pc = viewMat * SIMD4<Float>(pts3D[i*3], pts3D[i*3+1], pts3D[i*3+2], 1)
+                guard pc.z > 0 else { continue }
+                let u = fx * pc.x / pc.z + cx
+                let v = fy * pc.y / pc.z + cy
+                let dx = u - pts2D[i*2], dy = v - pts2D[i*2+1]
+                guard dx*dx + dy*dy < reprThreshSq else { continue }
+                fPts3D.append(pts3D[i*3]); fPts3D.append(pts3D[i*3+1]); fPts3D.append(pts3D[i*3+2])
+                fPts2D.append(pts2D[i*2]); fPts2D.append(pts2D[i*2+1])
+            }
+            if fPts3D.count / 3 >= minPnPInliers { pts3D = fPts3D; pts2D = fPts2D }
+        }
+
+        let pnpCount = pts3D.count / 3
         let pnp = OpenCVBridge.solvePnP(
             points3D: Data(bytes: pts3D, count: pts3D.count * 4),
             points2D: Data(bytes: pts2D, count: pts2D.count * 4),
-            count: matches.count,
+            count: pnpCount,
             fx: fx, fy: fy, cx: cx, cy: cy
         )
 
@@ -454,7 +505,7 @@ final class VisualOdometryEngine: ObservableObject {
             return
         }
 
-        let vm = buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector)
+        let vm = Self.buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector)
         let newPose = vm.inverse  // camera-to-world
 
         cameraPose = newPose
@@ -472,15 +523,33 @@ final class VisualOdometryEngine: ObservableObject {
             addKeyframe(from: matches, aliked: aliked, procImage: procImage, descDim: descDim)
         }
 
-        // Periodic drift correction: re-anchor pose via keyframe descriptor matching
-        if correctionInterval > 0, frameIndex % correctionInterval == 0 {
-            periodicCorrection(aliked: aliked, intrinsics: intrinsics, descDim: descDim)
+        // Periodic drift correction: fire-and-forget so processFrame returns immediately.
+        if correctionInterval > 0, frameIndex % correctionInterval == 0, !isCorrecting {
+            isCorrecting = true
+            let snapAliked = aliked, snapIntr = intrinsics, snapDim = descDim
+            let sid = sessionID
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.periodicCorrection(aliked: snapAliked, intrinsics: snapIntr, descDim: snapDim,
+                                              sessionID: sid)
+                self.isCorrecting = false
+            }
         }
 
-        // Periodically triangulate new map points to grow the map
-        if frameIndex - lastTriFrame >= triInterval {
-            growMap(currentPose: newPose, aliked: aliked,
-                    intrinsics: intrinsics, procImage: procImage, descDim: descDim)
+        // Periodically triangulate new map points — fire-and-forget so processFrame returns immediately.
+        if frameIndex - lastTriFrame >= triInterval, !isGrowingMap {
+            isGrowingMap = true
+            lastTriFrame = frameIndex  // prevent re-triggering while the task is in flight
+            let snapPose = newPose, snapAliked = aliked, snapIntr = intrinsics
+            let snapImg = procImage, snapDim = descDim
+            let sid = sessionID
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.growMap(currentPose: snapPose, aliked: snapAliked,
+                                   intrinsics: snapIntr, procImage: snapImg, descDim: snapDim,
+                                   sessionID: sid)
+                self.isGrowingMap = false
+            }
         }
     }
 
@@ -491,8 +560,9 @@ final class VisualOdometryEngine: ObservableObject {
         aliked: [TrackedPoint],
         intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float),
         procImage: UIImage,
-        descDim: Int
-    ) {
+        descDim: Int,
+        sessionID sid: Int = -1
+    ) async {
         guard let refPose = triRefPose else { return }
 
         var common: [TrackedPoint] = []
@@ -508,18 +578,25 @@ final class VisualOdometryEngine: ObservableObject {
 
         guard common.count >= minTriCommon else { return }
 
-        let parallax = averageDisplacement(pts1: pts1, pts2: pts2, count: common.count)
+        let parallax = Self.averageDisplacement(pts1: pts1, pts2: pts2, count: common.count)
         guard parallax >= minTriParallax else { return }
 
-        let result = triangulate(
-            pose1: refPose, pose2: currentPose,
-            pts1: pts1, pts2: pts2,
-            aliked: common,
-            intrinsics: intrinsics,
-            procImage: procImage,
-            confidence: 0.6,
-            descDim: descDim
-        )
+        let tPose1 = refPose, tPose2 = currentPose
+        let tPts1 = pts1, tPts2 = pts2, tCommon = common
+        let tIntr = intrinsics, tImg = procImage, tDim = descDim
+        let maxErr = maxReprojError, pw = procW, ph = procH
+        let result = await Task.detached(priority: .userInitiated) {
+            Self.triangulate(
+                pose1: tPose1, pose2: tPose2, pts1: tPts1, pts2: tPts2,
+                aliked: tCommon, intrinsics: tIntr, procImage: tImg,
+                confidence: 0.6, descDim: tDim,
+                maxReprojError: maxErr, procW: pw, procH: ph
+            )
+        }.value
+
+        // Bail out if reset() was called or we're no longer tracking (phase changed during await)
+        guard sid == -1 || sessionID == sid else { return }
+        guard phase == .tracking else { return }
 
         print("[VO] GrowMap: common=\(common.count) parallax=\(String(format:"%.1f",parallax))px tri=\(result.mapEntries.count)")
         guard !result.mapEntries.isEmpty else { return }
@@ -545,7 +622,7 @@ final class VisualOdometryEngine: ObservableObject {
     private func tryDescriptorRecovery(
         procImage: UIImage,
         intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float)
-    ) {
+    ) async {
         guard !keyframes.isEmpty else {
             statusMessage = "キーフレームなし — ロスト (tracking後に自動保存)"
             return
@@ -584,23 +661,23 @@ final class VisualOdometryEngine: ObservableObject {
 
         // Extract current frame features ONCE (reused across all KF attempts)
         let descDim = keyframes[candidates[0]].descDim
-        let curKPs:   [SIMD2<Float>]
-        let curDescs: [Float]
-        if descDim == 128 {
-            guard let f = ALIKEDMatcher.shared.extractFeatures(from: procImage), f.count > 0 else {
-                statusMessage = "現フレームALIKED抽出失敗 — ロスト"; return
+        let capturedImage = procImage
+        let featureResult: (kps: [SIMD2<Float>], descs: [Float])? = await Task.detached(priority: .userInitiated) {
+            if descDim == 128 {
+                guard let f = ALIKEDMatcher.shared.extractFeatures(from: capturedImage), f.count > 0 else { return nil }
+                return (f.keypoints, f.descriptors)
+            } else {
+                guard let f = XFeatMatcher.shared.extractFeatures(from: capturedImage), f.count > 0 else { return nil }
+                return (f.keypoints, f.descriptors)
             }
-            curKPs = f.keypoints; curDescs = f.descriptors
-        } else {
-            guard let f = XFeatMatcher.shared.extractFeatures(from: procImage), f.count > 0 else {
-                statusMessage = "現フレームXFeat抽出失敗 — ロスト"; return
-            }
-            curKPs = f.keypoints; curDescs = f.descriptors
+        }.value
+        guard let (curKPs, curDescs) = featureResult else {
+            statusMessage = "現フレーム特徴量抽出失敗 — ロスト"; return
         }
 
         // Try each candidate keyframe
         for idx in candidates {
-            if let pose = tryRecoverFromKeyframe(
+            if let pose = await tryRecoverFromKeyframe(
                 idx: idx, curKPs: curKPs, curDescs: curDescs, intrinsics: intrinsics
             ) {
                 cameraPose = pose
@@ -620,7 +697,8 @@ final class VisualOdometryEngine: ObservableObject {
         curKPs:   [SIMD2<Float>],
         curDescs: [Float],
         intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float)
-    ) -> simd_float4x4? {
+    ) async -> simd_float4x4? {
+        guard idx < keyframes.count else { return nil }  // reset() may have cleared keyframes during prior await
         var kf = keyframes[idx]
         let descDim = kf.descDim
 
@@ -631,7 +709,12 @@ final class VisualOdometryEngine: ObservableObject {
             if let cached = kf.cachedALIKED {
                 kfKPs = cached.keypoints; kfDescs = cached.descriptors
             } else {
-                guard let f = ALIKEDMatcher.shared.extractFeatures(from: kf.image), f.count > 0 else { return nil }
+                let kfImage = kf.image
+                let f = await Task.detached(priority: .userInitiated) {
+                    ALIKEDMatcher.shared.extractFeatures(from: kfImage)
+                }.value
+                guard let f, f.count > 0 else { return nil }
+                guard idx < keyframes.count else { return nil }  // keyframes may have changed during await
                 kf.cachedALIKED = f
                 keyframes[idx] = kf
                 kfKPs = f.keypoints; kfDescs = f.descriptors
@@ -640,49 +723,58 @@ final class VisualOdometryEngine: ObservableObject {
             if let cached = kf.cachedXFeat {
                 kfKPs = cached.keypoints; kfDescs = cached.descriptors
             } else {
-                guard let f = XFeatMatcher.shared.extractFeatures(from: kf.image), f.count > 0 else { return nil }
+                let kfImage = kf.image
+                let f = await Task.detached(priority: .userInitiated) {
+                    XFeatMatcher.shared.extractFeatures(from: kfImage)
+                }.value
+                guard let f, f.count > 0 else { return nil }
+                guard idx < keyframes.count else { return nil }  // keyframes may have changed during await
                 kf.cachedXFeat = f
                 keyframes[idx] = kf
                 kfKPs = f.keypoints; kfDescs = f.descriptors
             }
         }
 
-        // Mutual NN
-        let pairs = mutualNNRaw(
-            desc1: kfDescs, count1: kfKPs.count,
-            desc2: curDescs, count2: curKPs.count,
-            descDim: descDim, threshold: 0.60
-        )
-        print("[VO] KF[\(idx)]: pairs=\(pairs.count) map2D=\(kf.map2D.count)")
-        guard pairs.count >= minPnPInliers else { return nil }
-
-        // 3D-2D via proximity to map2D
-        var pts3D = [Float]()
-        var pts2D = [Float]()
-        for (kfPtIdx, curPtIdx) in pairs {
-            let kfKP = kfKPs[kfPtIdx]
-            guard let best = kf.map2D.min(by: {
-                simd_length($0.pos2D - kfKP) < simd_length($1.pos2D - kfKP)
-            }), simd_length(best.pos2D - kfKP) < kfProximityPx,
-            best.mapIdx < visualMap.entries.count else { continue }
-            let pos3D = visualMap.entries[best.mapIdx].position
-            let curKP = curKPs[curPtIdx]
-            pts3D.append(pos3D.x); pts3D.append(pos3D.y); pts3D.append(pos3D.z)
-            pts2D.append(curKP.x); pts2D.append(curKP.y)
-        }
-        let count = pts3D.count / 3
-        print("[VO] KF[\(idx)]: 3D-2D=\(count) (need \(minPnPInliers))")
-        guard count >= minPnPInliers else { return nil }
-
+        let kfKPsCopy = kfKPs, kfDescsCopy = kfDescs
+        let curKPsCopy = curKPs, curDescsCopy = curDescs
+        let map2DCopy = kf.map2D, entriesCopy = visualMap.entries
+        let dim = descDim, threshold: Float = 0.60
+        let minInliers = minPnPInliers, proximity = kfProximityPx
         let (fx, fy, cx, cy) = intrinsics
-        let pnp = OpenCVBridge.solvePnP(
-            points3D: Data(bytes: pts3D, count: pts3D.count * 4),
-            points2D: Data(bytes: pts2D, count: pts2D.count * 4),
-            count: count, fx: fx, fy: fy, cx: cx, cy: cy
-        )
-        print("[VO] KF[\(idx)]: PnP success=\(pnp.success) inliers=\(pnp.inlierCount)/\(minPnPInliers)")
-        guard pnp.success, pnp.inlierCount >= minPnPInliers else { return nil }
-        return buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector).inverse
+
+        let poseResult: simd_float4x4? = await Task.detached(priority: .userInitiated) {
+            let pairs = Self.mutualNNRaw(
+                desc1: kfDescsCopy, count1: kfKPsCopy.count,
+                desc2: curDescsCopy, count2: curKPsCopy.count,
+                descDim: dim, threshold: threshold
+            )
+            guard pairs.count >= minInliers else { return nil }
+
+            var pts3D = [Float](), pts2D = [Float]()
+            for (kfPtIdx, curPtIdx) in pairs {
+                let kfKP = kfKPsCopy[kfPtIdx]
+                guard let best = map2DCopy.min(by: {
+                    simd_length($0.pos2D - kfKP) < simd_length($1.pos2D - kfKP)
+                }), simd_length(best.pos2D - kfKP) < proximity,
+                best.mapIdx < entriesCopy.count else { continue }
+                let pos3D = entriesCopy[best.mapIdx].position
+                let curKP = curKPsCopy[curPtIdx]
+                pts3D.append(pos3D.x); pts3D.append(pos3D.y); pts3D.append(pos3D.z)
+                pts2D.append(curKP.x); pts2D.append(curKP.y)
+            }
+            let count = pts3D.count / 3
+            guard count >= minInliers else { return nil }
+
+            let pnp = OpenCVBridge.solvePnP(
+                points3D: Data(bytes: pts3D, count: pts3D.count * 4),
+                points2D: Data(bytes: pts2D, count: pts2D.count * 4),
+                count: count, fx: fx, fy: fy, cx: cx, cy: cy
+            )
+            guard pnp.success, pnp.inlierCount >= minInliers else { return nil }
+            return Self.buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector).inverse
+        }.value
+
+        return poseResult
     }
 
     // MARK: - Periodic Drift Correction
@@ -692,8 +784,9 @@ final class VisualOdometryEngine: ObservableObject {
     private func periodicCorrection(
         aliked: [TrackedPoint],
         intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float),
-        descDim: Int
-    ) {
+        descDim: Int,
+        sessionID sid: Int = -1
+    ) async {
         // Use most recent keyframe with matching descDim (active or dormant — doesn't matter)
         guard let kfIdx = keyframes.indices.last(where: { keyframes[$0].descDim == descDim }) else { return }
         let M = aliked.count
@@ -708,7 +801,12 @@ final class VisualOdometryEngine: ObservableObject {
             if let cached = kf.cachedALIKED {
                 kfKPs = cached.keypoints; kfDescs = cached.descriptors
             } else {
-                guard let f = ALIKEDMatcher.shared.extractFeatures(from: kf.image), f.count > 0 else { return }
+                let kfImage = kf.image
+                let f = await Task.detached(priority: .userInitiated) {
+                    ALIKEDMatcher.shared.extractFeatures(from: kfImage)
+                }.value
+                guard let f, f.count > 0 else { return }
+                guard kfIdx < keyframes.count else { return }  // keyframes may have changed during await
                 kf.cachedALIKED = f; keyframes[kfIdx] = kf
                 kfKPs = f.keypoints; kfDescs = f.descriptors
             }
@@ -716,7 +814,12 @@ final class VisualOdometryEngine: ObservableObject {
             if let cached = kf.cachedXFeat {
                 kfKPs = cached.keypoints; kfDescs = cached.descriptors
             } else {
-                guard let f = XFeatMatcher.shared.extractFeatures(from: kf.image), f.count > 0 else { return }
+                let kfImage = kf.image
+                let f = await Task.detached(priority: .userInitiated) {
+                    XFeatMatcher.shared.extractFeatures(from: kfImage)
+                }.value
+                guard let f, f.count > 0 else { return }
+                guard kfIdx < keyframes.count else { return }  // keyframes may have changed during await
                 kf.cachedXFeat = f; keyframes[kfIdx] = kf
                 kfKPs = f.keypoints; kfDescs = f.descriptors
             }
@@ -732,38 +835,53 @@ final class VisualOdometryEngine: ObservableObject {
             vDSP_vsmul(pt.descriptor, 1, [scale], &queryDescs[i * descDim], 1, vDSP_Length(descDim))
         }
 
-        let pairs = mutualNNRaw(
-            desc1: kfDescs, count1: kfKPs.count,
-            desc2: queryDescs, count2: M,
-            descDim: descDim, threshold: 0.65
-        )
-        guard pairs.count >= minPnPInliers else { return }
-
-        var pts3D = [Float]()
-        var pts2D = [Float]()
-        for (kfPtIdx, queryIdx) in pairs {
-            let kfKP = kfKPs[kfPtIdx]
-            guard let best = kf.map2D.min(by: {
-                simd_length($0.pos2D - kfKP) < simd_length($1.pos2D - kfKP)
-            }), simd_length(best.pos2D - kfKP) < kfProximityPx,
-            best.mapIdx < visualMap.entries.count else { continue }
-            let pos3D = visualMap.entries[best.mapIdx].position
-            let pt = aliked[queryIdx]
-            pts3D.append(pos3D.x); pts3D.append(pos3D.y); pts3D.append(pos3D.z)
-            pts2D.append(pt.position.x); pts2D.append(pt.position.y)
-        }
-        let count = pts3D.count / 3
-        guard count >= minPnPInliers else { return }
-
+        let kfKPsCopy = kfKPs, kfDescsCopy = kfDescs
+        let map2DCopy = kf.map2D, entriesCopy = visualMap.entries
+        let dim = descDim, queryDescsCopy = queryDescs, mCount = M
+        let threshold: Float = 0.65
+        let minInliers = minPnPInliers, proximity = kfProximityPx
         let (fx, fy, cx, cy) = intrinsics
-        let pnp = OpenCVBridge.solvePnP(
-            points3D: Data(bytes: pts3D, count: pts3D.count * 4),
-            points2D: Data(bytes: pts2D, count: pts2D.count * 4),
-            count: count, fx: fx, fy: fy, cx: cx, cy: cy
-        )
-        if pnp.success, pnp.inlierCount >= minPnPInliers {
-            cameraPose = buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector).inverse
-            print("[VO] Correction KF[\(kfIdx)]: inliers=\(pnp.inlierCount)")
+        let alikedCopy = aliked
+
+        let poseResult: simd_float4x4? = await Task.detached(priority: .userInitiated) {
+            let pairs = Self.mutualNNRaw(
+                desc1: kfDescsCopy, count1: kfKPsCopy.count,
+                desc2: queryDescsCopy, count2: mCount,
+                descDim: dim, threshold: threshold
+            )
+            guard pairs.count >= minInliers else { return nil }
+
+            var pts3D = [Float]()
+            var pts2D = [Float]()
+            for (kfPtIdx, queryIdx) in pairs {
+                let kfKP = kfKPsCopy[kfPtIdx]
+                guard let best = map2DCopy.min(by: {
+                    simd_length($0.pos2D - kfKP) < simd_length($1.pos2D - kfKP)
+                }), simd_length(best.pos2D - kfKP) < proximity,
+                best.mapIdx < entriesCopy.count else { continue }
+                let pos3D = entriesCopy[best.mapIdx].position
+                let pt = alikedCopy[queryIdx]
+                pts3D.append(pos3D.x); pts3D.append(pos3D.y); pts3D.append(pos3D.z)
+                pts2D.append(pt.position.x); pts2D.append(pt.position.y)
+            }
+            let count = pts3D.count / 3
+            guard count >= minInliers else { return nil }
+
+            let pnp = OpenCVBridge.solvePnP(
+                points3D: Data(bytes: pts3D, count: pts3D.count * 4),
+                points2D: Data(bytes: pts2D, count: pts2D.count * 4),
+                count: count, fx: fx, fy: fy, cx: cx, cy: cy
+            )
+            guard pnp.success, pnp.inlierCount >= minInliers else { return nil }
+            return Self.buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector).inverse
+        }.value
+
+        // Bail out if reset() was called while we were awaiting background work
+        guard sid == -1 || sessionID == sid else { return }
+
+        if let pose = poseResult {
+            cameraPose = pose
+            print("[VO] Correction KF[\(kfIdx)]: success")
         }
     }
 
@@ -829,7 +947,7 @@ final class VisualOdometryEngine: ObservableObject {
     /// Mutual nearest-neighbour matching between two descriptor matrices using BLAS.
     /// Returns pairs (idx in desc1, idx in desc2) that are mutual nearest neighbours
     /// with cosine similarity ≥ threshold. Descriptors must be L2-normalised.
-    private func mutualNNRaw(
+    nonisolated private static func mutualNNRaw(
         desc1: [Float], count1: Int,
         desc2: [Float], count2: Int,
         descDim: Int, threshold: Float
@@ -878,7 +996,7 @@ final class VisualOdometryEngine: ObservableObject {
         let triangulatedIDs: [Int]  // TrackedPoint IDs of successfully triangulated points
     }
 
-    private func triangulate(
+    nonisolated private static func triangulate(
         pose1: simd_float4x4,
         pose2: simd_float4x4,
         pts1: [Float],
@@ -887,7 +1005,10 @@ final class VisualOdometryEngine: ObservableObject {
         intrinsics: (fx: Float, fy: Float, cx: Float, cy: Float),
         procImage: UIImage,
         confidence: Float,
-        descDim: Int
+        descDim: Int,
+        maxReprojError: Float,
+        procW: Float,
+        procH: Float
     ) -> TriResult {
         let (fx, fy, cx, cy) = intrinsics
         let count = aliked.count
@@ -898,8 +1019,8 @@ final class VisualOdometryEngine: ObservableObject {
         let V1 = pose1.inverse  // world-to-camera
         let V2 = pose2.inverse
 
-        let P1 = projectionMatrix(from: V1)
-        let P2 = projectionMatrix(from: V2)
+        let P1 = Self.projectionMatrix(from: V1)
+        let P2 = Self.projectionMatrix(from: V2)
 
         // Normalize 2D points to image coordinates
         var n1 = [Float](repeating: 0, count: count * 2)
@@ -918,7 +1039,7 @@ final class VisualOdometryEngine: ObservableObject {
             count: count
         ) else { return TriResult(mapEntries: [], cloud3D: [], triangulatedIDs: []) }
 
-        let worldPts = unpackFloat3(from: raw, count: count)
+        let worldPts = Self.unpackFloat3(from: raw, count: count)
 
         var mapEntries: [VisualMapEntry] = []
         var cloud3D: [Point3D] = []
@@ -947,7 +1068,7 @@ final class VisualOdometryEngine: ObservableObject {
             let desc = aliked[i].descriptor
             guard desc.count == descDim else { continue }
 
-            let color = sampleColor(procImage, x: pts2[i*2], y: pts2[i*2+1])
+            let color = Self.sampleColor(procImage, x: pts2[i*2], y: pts2[i*2+1], procW: procW, procH: procH)
             mapEntries.append(VisualMapEntry(position: wp, descriptor: desc))
             cloud3D.append(Point3D(position: wp, color: color, confidence: confidence))
             triangulatedIDs.append(aliked[i].id)
@@ -961,8 +1082,9 @@ final class VisualOdometryEngine: ObservableObject {
     /// Match current ALIKED points to bootstrap descriptors using cosine similarity (BLAS).
     /// Returns parallel arrays: pts1 (bootstrap 2D), pts2 (current 2D), and matched TrackedPoints.
     /// This is ID-independent so it survives PointTracker re-detections.
-    private func matchBootstrapDescriptors(
-        current: [TrackedPoint], descDim: Int
+    nonisolated private static func matchBootstrapDescriptors(
+        current: [TrackedPoint], descDim: Int,
+        bootstrapDescriptors: [Float], bootstrapPositions2D: [SIMD2<Float>]
     ) -> (pts1: [Float], pts2: [Float], common: [TrackedPoint]) {
         let N = bootstrapPositions2D.count
         let M = current.count
@@ -1033,7 +1155,7 @@ final class VisualOdometryEngine: ObservableObject {
         // Filter by target marker ID if specified
         if targetMarkerID >= 0, aruco.markerId != targetMarkerID { return nil }
 
-        let vm = buildViewMatrix(rData: aruco.rotationMatrix, tData: aruco.translationVector)
+        let vm = Self.buildViewMatrix(rData: aruco.rotationMatrix, tData: aruco.translationVector)
         return vm.inverse
     }
 
@@ -1054,8 +1176,8 @@ final class VisualOdometryEngine: ObservableObject {
         guard rp.success, rp.inlierCount >= 10 else { return nil }
 
         let V1 = pose1.inverse  // world-to-camera at frame 1
-        let relR = mat3FromData(rp.rotationMatrix)
-        let relT = vec3FromData(rp.translationVector)
+        let relR = Self.mat3FromData(rp.rotationMatrix)
+        let relT = Self.vec3FromData(rp.translationVector)
 
         // V2 = relative_T * V1
         let R1 = simd_float3x3(V1.columns.0.xyz, V1.columns.1.xyz, V1.columns.2.xyz)
@@ -1075,7 +1197,7 @@ final class VisualOdometryEngine: ObservableObject {
     // MARK: - Geometry Utilities
 
     /// Build a 4×4 view matrix (world-to-camera) from OpenCV rvec/tvec data.
-    private func buildViewMatrix(rData: Data, tData: Data) -> simd_float4x4 {
+    nonisolated private static func buildViewMatrix(rData: Data, tData: Data) -> simd_float4x4 {
         guard rData.count >= 36, tData.count >= 12 else { return matrix_identity_float4x4 }
         let rf = rData.withUnsafeBytes { $0.bindMemory(to: Float.self) }
         let tf = tData.withUnsafeBytes { $0.bindMemory(to: Float.self) }
@@ -1094,7 +1216,7 @@ final class VisualOdometryEngine: ObservableObject {
     }
 
     /// Extract 3×4 projection matrix (row-major, 12 floats) from a view matrix.
-    private func projectionMatrix(from viewMatrix: simd_float4x4) -> [Float] {
+    nonisolated private static func projectionMatrix(from viewMatrix: simd_float4x4) -> [Float] {
         var P = [Float](repeating: 0, count: 12)
         P[0]  = viewMatrix.columns.0.x; P[1]  = viewMatrix.columns.1.x
         P[2]  = viewMatrix.columns.2.x; P[3]  = viewMatrix.columns.3.x
@@ -1105,7 +1227,7 @@ final class VisualOdometryEngine: ObservableObject {
         return P
     }
 
-    private func mat3FromData(_ data: Data) -> simd_float3x3 {
+    nonisolated private static func mat3FromData(_ data: Data) -> simd_float3x3 {
         guard data.count >= 36 else { return matrix_identity_float3x3 }
         let f = data.withUnsafeBytes { $0.bindMemory(to: Float.self) }
         return simd_float3x3(
@@ -1115,18 +1237,18 @@ final class VisualOdometryEngine: ObservableObject {
         )
     }
 
-    private func vec3FromData(_ data: Data) -> SIMD3<Float> {
+    nonisolated private static func vec3FromData(_ data: Data) -> SIMD3<Float> {
         guard data.count >= 12 else { return .zero }
         let f = data.withUnsafeBytes { $0.bindMemory(to: Float.self) }
         return SIMD3<Float>(f[0], f[1], f[2])
     }
 
-    private func unpackFloat3(from data: Data, count: Int) -> [SIMD3<Float>] {
+    nonisolated private static func unpackFloat3(from data: Data, count: Int) -> [SIMD3<Float>] {
         let f = data.withUnsafeBytes { $0.bindMemory(to: Float.self) }
         return (0..<count).map { i in SIMD3<Float>(f[i*3], f[i*3+1], f[i*3+2]) }
     }
 
-    private func averageDisplacement(pts1: [Float], pts2: [Float], count: Int) -> Float {
+    nonisolated private static func averageDisplacement(pts1: [Float], pts2: [Float], count: Int) -> Float {
         guard count > 0 else { return 0 }
         var total: Float = 0
         for i in 0..<count {
@@ -1137,7 +1259,7 @@ final class VisualOdometryEngine: ObservableObject {
         return total / Float(count)
     }
 
-    private func sampleColor(_ image: UIImage, x: Float, y: Float) -> SIMD3<Float> {
+    nonisolated private static func sampleColor(_ image: UIImage, x: Float, y: Float, procW: Float, procH: Float) -> SIMD3<Float> {
         guard let cg = image.cgImage else { return SIMD3<Float>(0.5, 0.5, 0.5) }
         let iw = CGFloat(cg.width), ih = CGFloat(cg.height)
         let px = Int(CGFloat(x) / CGFloat(procW) * iw)

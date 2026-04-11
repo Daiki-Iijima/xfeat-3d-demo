@@ -34,6 +34,20 @@ final class ARSessionManager: NSObject, ObservableObject {
     // Thread-safe: CIContext is documented as safe for concurrent rendering.
     nonisolated(unsafe) private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
 
+    // MARK: - Frame mailbox (prevents ARFrame accumulation)
+    //
+    // ARKit delivers frames at ~60 fps on a background thread. If the MainActor is
+    // busy (feature extraction), queued `Task { @MainActor in }` closures each retain
+    // their ARFrame, triggering ARKit's "retaining N ARFrames" warning and eventually
+    // stalling the camera feed.
+    //
+    // Solution: mailbox pattern — only the *latest* frame is kept. A single MainActor
+    // task drains it; while that task is pending no new task is scheduled.
+    nonisolated(unsafe) private let mailboxLock = NSLock()
+    nonisolated(unsafe) private var mailboxFrame: ARFrame?
+    nonisolated(unsafe) private var mailboxImage: UIImage?
+    nonisolated(unsafe) private var mailboxPending = false
+
     override init() {
         super.init()
         arSession.delegate = self
@@ -149,10 +163,31 @@ extension ARSessionManager: ARSessionDelegate {
 
     nonisolated func session(_ session: ARSession, didUpdate frame: ARFrame) {
         let image = makeUIImage(from: frame.capturedImage)
+
+        // Deposit the latest frame into the mailbox (replaces any unseen frame).
+        mailboxLock.lock()
+        mailboxFrame = frame
+        mailboxImage = image
+        let shouldSchedule = !mailboxPending
+        if shouldSchedule { mailboxPending = true }
+        mailboxLock.unlock()
+
+        // Only schedule one MainActor task at a time; it will drain the mailbox.
+        guard shouldSchedule else { return }
+
         Task { @MainActor in
-            self.latestFrame    = frame
-            self.procImage      = image
-            self.trackingState  = frame.camera.trackingState
+            self.mailboxLock.lock()
+            let f   = self.mailboxFrame
+            let img = self.mailboxImage
+            self.mailboxFrame   = nil
+            self.mailboxImage   = nil
+            self.mailboxPending = false
+            self.mailboxLock.unlock()
+
+            guard let f, let img else { return }
+            self.latestFrame   = f
+            self.procImage     = img
+            self.trackingState = f.camera.trackingState
         }
     }
 
