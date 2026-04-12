@@ -154,9 +154,16 @@ BAResult runLocalBA(const simd_float4x4 *poses,
                                  pointParams[obs.pointIdx].data());
     }
 
-    // Fix gauge freedom: hold the first pose constant
+    // Fix gauge freedom: hold the first pose constant.
+    // Explicitly add the block first — if no observations reference the first pose it
+    // will not have been added via AddResidualBlock, and SetParameterBlockConstant
+    // would crash with "Parameter block not found".
     if (fixFirstPose && poseCount > 0) {
-        problem.SetParameterBlockConstant(poseParams[0].data());
+        double* firstPose = poseParams[0].data();
+        if (!problem.HasParameterBlock(firstPose)) {
+            problem.AddParameterBlock(firstPose, 6);
+        }
+        problem.SetParameterBlockConstant(firstPose);
     }
 
     // --- Solve ---
