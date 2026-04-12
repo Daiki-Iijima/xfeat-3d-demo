@@ -164,7 +164,7 @@ BAResult runLocalBA(const simd_float4x4 *poses,
     const int maxIter = (obsCount > 100) ? 30 : (obsCount < 20 ? 15 : 25);
 
     ceres::Solver::Options opts;
-    opts.linear_solver_type           = ceres::DENSE_SCHUR;
+    opts.linear_solver_type           = ceres::DENSE_QR;  // DENSE_SCHUR requires template specialisations not in this build
     opts.trust_region_strategy_type   = ceres::LEVENBERG_MARQUARDT;
     opts.max_num_iterations           = maxIter;
     opts.num_threads                  = 2;

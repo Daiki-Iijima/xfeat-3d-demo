@@ -175,6 +175,11 @@ final class VisualOdometryEngine: ObservableObject {
     private var isCorrecting:    Bool = false
     private var isRunningBA:     Bool = false
     private var isDetectingLoop: Bool = false
+    /// Consecutive successful PnP frames — used to gate the pre-filter threshold.
+    /// Resets to 0 whenever the pose is freshly recovered (ArUco / KF recovery).
+    private var stablePnPFrames: Int = 0
+    /// Consecutive PnP failures — go lost only after this exceeds the hysteresis limit.
+    private var consecutivePnPFailures: Int = 0
     /// Incremented on every reset(). Fire-and-forget Tasks compare against this to
     /// detect that the engine was reset while they were awaiting background work,
     /// and bail out instead of writing stale data.
@@ -201,10 +206,12 @@ final class VisualOdometryEngine: ObservableObject {
         bootstrapComplete = false
         keyframes = []
         lostFrameCount = 0
-        isGrowingMap    = false
-        isCorrecting    = false
-        isRunningBA     = false
-        isDetectingLoop = false
+        isGrowingMap           = false
+        isCorrecting           = false
+        isRunningBA            = false
+        isDetectingLoop        = false
+        stablePnPFrames        = 0
+        consecutivePnPFailures = 0
         sessionID += 1
         recoveryKeyframeImage = nil
         activeKeyframeCount = 0
@@ -264,6 +271,8 @@ final class VisualOdometryEngine: ObservableObject {
                     lostFrameCount = 0
                     lastMarkerFrame = frameIndex
                     isMarkerInView  = true
+                    stablePnPFrames        = 0   // pose is fresh — relax pre-filter until stable
+                    consecutivePnPFailures = 0
                     statusMessage = "ArUco再検出 — トラッキング再開"
                     return
                 }
@@ -498,14 +507,16 @@ final class VisualOdometryEngine: ObservableObject {
         }
 
         // Pre-filter by reprojection using the current pose estimate.
-        // Removes map points whose 3D positions are inconsistent with the observed 2D position,
-        // preventing noisy/stale triangulation from making PnP degenerate (success=false, inliers=0).
+        // Threshold relaxes for the first few frames after a recovery to avoid rejecting
+        // all observations when the recovered pose has small inaccuracies.
         if let pose = cameraPose {
             let viewMat = pose.inverse
             var fPts3D = [Float](), fPts2D = [Float]()
             fPts3D.reserveCapacity(pts3D.count)
             fPts2D.reserveCapacity(pts2D.count)
-            let reprThreshSq: Float = 10 * 10   // 10 px tolerance
+            // Fresh pose (just recovered): use 25 px — stable tracking: use 12 px
+            let reprPx: Float = stablePnPFrames >= 5 ? 12 : 25
+            let reprThreshSq = reprPx * reprPx
             let n = pts3D.count / 3
             for i in 0..<n {
                 let pc = viewMat * SIMD4<Float>(pts3D[i*3], pts3D[i*3+1], pts3D[i*3+2], 1)
@@ -530,11 +541,19 @@ final class VisualOdometryEngine: ObservableObject {
         )
 
         guard pnp.success, pnp.inlierCount >= minPnPInliers else {
-            print("[VO] PnP failed: inliers=\(pnp.inlierCount)/\(minPnPInliers) success=\(pnp.success) → lost")
-            phase = .lost
-            statusMessage = "PnP失敗 (インライア: \(pnp.inlierCount)/\(minPnPInliers)) — ロスト"
+            consecutivePnPFailures += 1
+            stablePnPFrames = 0
+            print("[VO] PnP failed: inliers=\(pnp.inlierCount)/\(minPnPInliers) success=\(pnp.success) (fail#\(consecutivePnPFailures))")
+            // Require 3 consecutive failures before going lost (hysteresis)
+            if consecutivePnPFailures >= 3 {
+                phase = .lost
+                statusMessage = "PnP失敗 (インライア: \(pnp.inlierCount)/\(minPnPInliers)) — ロスト"
+            }
             return
         }
+
+        consecutivePnPFailures = 0
+        stablePnPFrames = min(stablePnPFrames + 1, 10)
 
         let vm = Self.buildViewMatrix(rData: pnp.rotationMatrix, tData: pnp.translationVector)
         let newPose = vm.inverse  // camera-to-world
@@ -828,6 +847,10 @@ final class VisualOdometryEngine: ObservableObject {
         // Build candidate list
         var candidates = activeIndices
         if lostFrameCount % dormantCheckInterval == 0 {
+            candidates += dormantSims.prefix(4).map { $0.idx }  // check top-4 dormant (was top-2)
+        }
+        // When no active KFs exist, always check top-2 dormant every frame
+        if activeIndices.isEmpty, lostFrameCount % dormantCheckInterval != 0 {
             candidates += dormantSims.prefix(2).map { $0.idx }
         }
         print("[VO] Recovery: active=\(activeIndices.count) dormant=\(dormantSims.count) candidates=\(candidates.count) lostFrame=\(lostFrameCount)")
@@ -861,6 +884,8 @@ final class VisualOdometryEngine: ObservableObject {
                 cameraPose = pose
                 phase = .tracking
                 lostFrameCount = 0
+                stablePnPFrames        = 0   // pose is fresh — relax pre-filter until stable
+                consecutivePnPFailures = 0
                 statusMessage = "KF[\(idx)]で復帰! アクティブ:\(activeKeyframeCount) 休眠:\(dormantKeyframeCount)"
                 return
             }
