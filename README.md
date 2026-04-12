@@ -16,15 +16,22 @@ ArUco マーカーで座標系を確立し、ALIKED/XFeat 記述子ベースの 
 
 - iPad (iOS 17.0 以上)
 - Xcode 15 以上
-- [XcodeGen](https://github.com/yonaskolb/XcodeGen): `brew install xcodegen`
+- [XcodeGen](https://github.com/yonaskolb/XcodeGen)（setup.sh が自動インストール）
 
-## ビルド手順
+## セットアップ
 
 ```bash
-xcodegen generate
-open VisualOdo.xcodeproj
-# Signing & Capabilities でチームを設定してビルド
+git clone <repo-url>
+cd VisualOdo
+bash setup.sh
 ```
+
+`setup.sh` が XcodeGen のインストールと `.xcodeproj` の生成を自動で行う。  
+完了後、Xcode で Signing & Capabilities のチームを設定して iPad 実機ビルド。
+
+> **依存ライブラリはリポジトリに同梱済み**  
+> opencv2.xcframework / Ceres.xcframework / XFeat・ALIKED・SuperPoint.mlpackage  
+> は `Sources/` 以下に含まれているため、別途ダウンロード不要。
 
 ## VO パイプライン
 

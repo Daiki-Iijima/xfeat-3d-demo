@@ -27,3 +27,10 @@ build/
 # Swift Package Manager
 .build/
 .swiftpm/
+
+# ThirdParty build workspace (Ceres/Eigen ビルド中間生成物)
+# 成果物は Sources/Ceres/Ceres.xcframework に配置済み
+ThirdParty/
+
+# 一時ファイル
+*.dtmp
