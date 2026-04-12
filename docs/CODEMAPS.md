@@ -1,4 +1,4 @@
-# CODEMAPS — XFeat3D
+# CODEMAPS — VisualOdo
 
 最終更新: 2026-04-10
 
@@ -37,7 +37,7 @@ KeyframeDB (in-memory)          ← 復帰用キーフレームDB
 
 | ファイル | 役割 |
 |---|---|
-| `XFeat3DApp.swift` | `@main` エントリポイント、`ContentView` を表示 |
+| `VisualOdoApp.swift` | `@main` エントリポイント、`ContentView` を表示 |
 
 ---
 
@@ -188,7 +188,7 @@ final class VisualMap {
 |---|---|
 | `OpenCVBridge.h` | Objective-C ブリッジヘッダ |
 | `OpenCVBridge.mm` | OpenCV 4.x 実装 |
-| `XFeat3D-Bridging-Header.h` | Swift ブリッジ |
+| `VisualOdo-Bridging-Header.h` | Swift ブリッジ |
 | `opencv2.xcframework` | OpenCV iOS フレームワーク |
 
 **提供 API:**
@@ -312,7 +312,7 @@ VisualOdometryEngine.processFrame(procImage, trackedPoints, intrinsics)
 xcodegen generate
 
 # ビルド (実機のみ)
-open XFeat3D.xcodeproj
+open VisualOdo.xcodeproj
 # Signing & Capabilities でチームを設定してからビルド
 ```
 

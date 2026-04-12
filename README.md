@@ -1,4 +1,4 @@
-# XFeat3D — ArUco初期化 VO + 多キーフレームロスト復帰 (iPad)
+# VisualOdo — ArUco初期化 VO + 多キーフレームロスト復帰 (iPad)
 
 ArUco マーカーで座標系を確立し、ALIKED/XFeat 記述子ベースの PnP で自己位置推定を行う iPad 向け Visual Odometry アプリ。
 ロスト時には最大 20 枚のキーフレームデータベースを照合してポーズを復帰する。
@@ -22,7 +22,7 @@ ArUco マーカーで座標系を確立し、ALIKED/XFeat 記述子ベースの 
 
 ```bash
 xcodegen generate
-open XFeat3D.xcodeproj
+open VisualOdo.xcodeproj
 # Signing & Capabilities でチームを設定してビルド
 ```
 
@@ -73,7 +73,7 @@ ARKit フレーム (毎フレーム)
 ```
 Sources/
 ├── App/
-│   └── XFeat3DApp.swift             @main エントリポイント
+│   └── VisualOdoApp.swift             @main エントリポイント
 ├── Camera/
 │   ├── ARSessionManager.swift        ARKit セッション + procImage 配信
 │   └── CameraPreviewView.swift       ARSCNView SwiftUI ラッパー
@@ -87,7 +87,7 @@ Sources/
 │   └── VisualMap.swift               インメモリ 3D マップ (BLAS GEMM マッチング)
 ├── OpenCV/
 │   ├── OpenCVBridge.h/mm             LKフロー / ORB / ArUco / PnP / 三角測量
-│   ├── XFeat3D-Bridging-Header.h
+│   ├── VisualOdo-Bridging-Header.h
 │   └── opencv2.xcframework
 ├── ALIKED/
 │   ├── ALIKEDMatcher.swift           CoreML 128次元記述子抽出

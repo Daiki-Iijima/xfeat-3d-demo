@@ -1,4 +1,4 @@
-name: XFeat3D
+name: VisualOdo
 options:
   bundleIdPrefix: com.daiki
   deploymentTarget:
@@ -7,7 +7,7 @@ options:
   xcodeVersion: "15.0"
 
 targets:
-  XFeat3D:
+  VisualOdo:
     type: application
     platform: iOS
     deploymentTarget: "17.0"
@@ -22,10 +22,10 @@ targets:
       - path: Sources/SuperPoint/SuperPoint.mlpackage
         buildRule: coreml
     settings:
-      PRODUCT_BUNDLE_IDENTIFIER: com.daiki.XFeat3D
+      PRODUCT_BUNDLE_IDENTIFIER: com.daiki.VisualOdo
       TARGETED_DEVICE_FAMILY: "1,2"
       SWIFT_VERSION: "5.9"
-      SWIFT_OBJC_BRIDGING_HEADER: Sources/OpenCV/XFeat3D-Bridging-Header.h
+      SWIFT_OBJC_BRIDGING_HEADER: Sources/OpenCV/VisualOdo-Bridging-Header.h
       CLANG_ENABLE_MODULES: YES
       HEADER_SEARCH_PATHS:
         - $(SRCROOT)/Sources/Ceres
