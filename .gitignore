@@ -34,3 +34,6 @@ ThirdParty/
 
 # 一時ファイル
 *.dtmp
+
+# Codeviz analysis output
+**/.codeviz/
